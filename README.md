@@ -125,9 +125,8 @@ Run in IDEA:
 
 ```sh
 ./gradlew clean buildPlugin
-
-# The generated plugin package will be in the build/distributions/ directory (package size approximately 40MB)
 ```
+> The generated plugin package will be in the build/distributions/ directory (package size approximately 40MB)
 
 ---
 
