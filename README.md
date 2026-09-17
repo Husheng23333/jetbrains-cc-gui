@@ -114,14 +114,7 @@ cd ai-bridge
 npm install
 ```
 
-### 3. Debug Plugin
-
-Run in IDEA:
-```bash
-./gradlew clean runIde
-```
-
-### 4. Build Plugin
+### 3. Build Plugin
 
 ```sh
 ./gradlew clean buildPlugin
