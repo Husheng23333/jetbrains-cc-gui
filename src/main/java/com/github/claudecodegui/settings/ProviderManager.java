@@ -671,10 +671,19 @@ public class ProviderManager {
 
             // Extract the provider list
             if (response.has("providers")) {
+                // cc-switch common config (通用配置) read from the settings table,
+                // passed through as a raw string (JSON for claude, TOML for codex).
+                // Absent when an older reader script is still extracted.
+                String commonConfig = response.has("commonConfig") && response.get("commonConfig").isJsonPrimitive()
+                        ? response.get("commonConfig").getAsString()
+                        : null;
+
                 JsonArray providersArray = response.getAsJsonArray("providers");
                 for (JsonElement element : providersArray) {
                     if (element.isJsonObject()) {
-                        result.add(element.getAsJsonObject());
+                        JsonObject provider = element.getAsJsonObject();
+                        mergeCommonConfigIntoProvider(provider, appType, commonConfig);
+                        result.add(provider);
                     }
                 }
             }
@@ -693,6 +702,24 @@ public class ProviderManager {
         }
 
         return result;
+    }
+
+    /**
+     * Merges the cc-switch common config into one parsed provider. A failure to
+     * parse or merge only degrades to the un-merged provider — never aborts the
+     * whole import — because the provider data itself is already usable.
+     */
+    private static void mergeCommonConfigIntoProvider(JsonObject provider, String appType, String commonConfig) {
+        if (commonConfig == null || commonConfig.trim().isEmpty()) {
+            return;
+        }
+        try {
+            CcSwitchCommonConfigMerger.merge(provider, appType, commonConfig);
+        } catch (Exception e) {
+            LOG.warn("[ProviderManager] Failed to merge cc-switch common config into provider "
+                    + (provider.has("id") ? provider.get("id").getAsString() : "?")
+                    + ", importing without it: " + e.getMessage());
+        }
     }
 
     /**

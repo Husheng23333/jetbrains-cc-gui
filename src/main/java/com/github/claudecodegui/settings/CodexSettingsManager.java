@@ -839,7 +839,7 @@ public class CodexSettingsManager {
     /**
      * Parses TOML 1.0 into mutable maps/lists used by the existing settings managers.
      */
-    private Map<String, Object> parseToml(String content) throws IOException {
+    static Map<String, Object> parseToml(String content) throws IOException {
         TomlParseResult parsed = Toml.parse(content == null ? "" : content);
         if (parsed.hasErrors()) {
             StringBuilder errors = new StringBuilder();
@@ -854,7 +854,35 @@ public class CodexSettingsManager {
         return convertTomlTable(parsed);
     }
 
-    private Map<String, Object> convertTomlTable(TomlTable table) {
+    /**
+     * Merges a cc-switch common-config TOML fragment beneath a provider's own
+     * TOML fragment (provider values win on conflict) and returns the merged TOML.
+     */
+    static String mergeCommonConfigToml(String commonToml, String providerToml) throws IOException {
+        Map<String, Object> merged = parseToml(commonToml);
+        Map<String, Object> provider = parseToml(providerToml);
+        overlayTomlValues(merged, provider);
+        return generateToml(merged);
+    }
+
+    private static void overlayTomlValues(Map<String, Object> target, Map<String, Object> override) {
+        for (Map.Entry<String, Object> entry : override.entrySet()) {
+            String key = entry.getKey();
+            Object overrideValue = entry.getValue();
+            Object targetValue = target.get(key);
+            if (overrideValue instanceof Map && targetValue instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> targetMap = (Map<String, Object>) targetValue;
+                @SuppressWarnings("unchecked")
+                Map<String, Object> overrideMap = (Map<String, Object>) overrideValue;
+                overlayTomlValues(targetMap, overrideMap);
+            } else {
+                target.put(key, overrideValue);
+            }
+        }
+    }
+
+    private static Map<String, Object> convertTomlTable(TomlTable table) {
         Map<String, Object> result = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : table.entrySet()) {
             result.put(entry.getKey(), convertTomlValue(entry.getValue()));
@@ -862,7 +890,7 @@ public class CodexSettingsManager {
         return result;
     }
 
-    private Object convertTomlValue(Object value) {
+    private static Object convertTomlValue(Object value) {
         if (value instanceof TomlTable) {
             return convertTomlTable((TomlTable) value);
         }
@@ -880,7 +908,7 @@ public class CodexSettingsManager {
     /**
      * Generate TOML string from map
      */
-    private String generateToml(Map<String, Object> config) {
+    private static String generateToml(Map<String, Object> config) {
         StringBuilder sb = new StringBuilder();
 
         // First, write top-level key=value pairs (exclude Map sections and array of tables)
@@ -922,7 +950,7 @@ public class CodexSettingsManager {
      * Write a TOML section recursively.
      * Handles nested Map sections and List&lt;Map&gt; array of tables.
      */
-    private void writeTomlSection(StringBuilder sb, String sectionPath, Map<String, Object> section) {
+    private static void writeTomlSection(StringBuilder sb, String sectionPath, Map<String, Object> section) {
         // A simple value is anything that is not a nested table or array of tables.
         boolean hasSimpleValues = section.values().stream()
                                           .anyMatch(v -> !(v instanceof Map) && !isArrayOfTables(v));
@@ -969,11 +997,11 @@ public class CodexSettingsManager {
     /**
      * Validates that a key is a valid TOML bare key.
      */
-    private boolean isValidTomlKey(String key) {
+    private static boolean isValidTomlKey(String key) {
         return key != null && !key.isEmpty() && TOML_KEY_PATTERN.matcher(key).matches();
     }
 
-    private String toTomlKey(String key) {
+    private static String toTomlKey(String key) {
         if (isValidTomlKey(key)) {
             return key;
         }
@@ -983,7 +1011,7 @@ public class CodexSettingsManager {
     /**
      * Checks if a value is an array of tables (List where elements are Maps).
      */
-    private boolean isArrayOfTables(Object value) {
+    private static boolean isArrayOfTables(Object value) {
         if (!(value instanceof List<?> list)) {
             return false;
         }
@@ -1001,7 +1029,7 @@ public class CodexSettingsManager {
     /**
      * Convert Java object to TOML value string
      */
-    private String toTomlValue(Object value) {
+    private static String toTomlValue(Object value) {
         if (value == null) {
             return "\"\"";
         }
@@ -1059,7 +1087,7 @@ public class CodexSettingsManager {
     /**
      * Escape special characters in TOML string
      */
-    private String escapeTomlString(String str) {
+    private static String escapeTomlString(String str) {
         StringBuilder escaped = new StringBuilder(str.length());
         for (int i = 0; i < str.length(); i++) {
             char value = str.charAt(i);
@@ -1098,7 +1126,7 @@ public class CodexSettingsManager {
         return escaped.toString();
     }
 
-    private void appendHex4(StringBuilder target, char value) {
+    private static void appendHex4(StringBuilder target, char value) {
         String hexDigits = "0123456789ABCDEF";
         target.append(hexDigits.charAt((value >> 12) & 0xF));
         target.append(hexDigits.charAt((value >> 8) & 0xF));

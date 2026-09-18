@@ -210,6 +210,22 @@ try {
         }
     }).filter(p => p !== null);
 
+    // Read the common config (通用配置) for the requested app type from the settings table.
+    // Stored as a raw string: JSON for 'claude', TOML for 'codex' — the Java side parses it.
+    let commonConfig = null;
+    try {
+        const settingsResult = db.exec(`
+            SELECT value FROM settings
+            WHERE key = 'common_config_${appType.replace(/'/g, "''")}'
+        `);
+        if (settingsResult.length > 0 && settingsResult[0].values.length > 0) {
+            commonConfig = settingsResult[0].values[0][0];
+        }
+    } catch (e) {
+        // Older cc-switch versions may not have the settings table — treat as no common config
+        console.error(`Failed to read common config:`, e.message);
+    }
+
     // Close the database
     db.close();
 
@@ -217,7 +233,8 @@ try {
     console.log(JSON.stringify({
         success: true,
         providers: providers,
-        count: providers.length
+        count: providers.length,
+        commonConfig: commonConfig
     }));
 
 } catch (error) {
