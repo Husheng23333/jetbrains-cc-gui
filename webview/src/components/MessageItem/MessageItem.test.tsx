@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ClaudeContentBlock, ClaudeMessage, ToolResultBlock } from '../../types';
 import { extractMarkdownContent } from '../../utils/copyUtils';
@@ -20,8 +20,24 @@ vi.mock('../toolBlocks', () => ({
 }));
 
 vi.mock('./ContentBlockRenderer', () => ({
-  ContentBlockRenderer: ({ block }: { block: ClaudeContentBlock }) => (
-    <div data-testid={`content-block-${block.type}`}>{block.type}</div>
+  ContentBlockRenderer: ({
+    block,
+    isThinkingExpanded,
+    onToggleThinking,
+  }: {
+    block: ClaudeContentBlock;
+    isThinkingExpanded?: boolean;
+    onToggleThinking?: () => void;
+  }) => (
+    <div
+      data-testid={`content-block-${block.type}`}
+      data-thinking-expanded={String(Boolean(isThinkingExpanded))}
+    >
+      {block.type}
+      {onToggleThinking && (
+        <button data-testid={`toggle-${block.type}`} onClick={onToggleThinking}>toggle</button>
+      )}
+    </div>
   ),
 }));
 
@@ -68,14 +84,21 @@ const getContentBlocks = (message: ClaudeMessage): ClaudeContentBlock[] => {
 
 const findToolResult = (_toolId: string | undefined, _messageIndex: number): ToolResultBlock | null => null;
 
-function renderMessageItem(message: ClaudeMessage, options: { detailedOutputEnabled?: boolean } = {}) {
+function renderMessageItem(
+  message: ClaudeMessage,
+  options: {
+    detailedOutputEnabled?: boolean;
+    streamingActive?: boolean;
+    isLast?: boolean;
+  } = {}
+) {
   return render(
     <MessageItem
       message={message}
       messageIndex={0}
       messageKey="message-0"
-      isLast={false}
-      streamingActive={false}
+      isLast={options.isLast ?? false}
+      streamingActive={options.streamingActive ?? false}
       isThinking={false}
       t={t}
       getMessageText={getMessageText}
@@ -402,5 +425,107 @@ describe('MessageItem token usage display', () => {
 
     expect(screen.getByText('0:03')).toBeTruthy();
     expect(screen.queryByText(/输入/)).toBeNull();
+  });
+});
+
+describe('MessageItem thinking auto-collapse', () => {
+  const buildMessage = (blocks: ClaudeContentBlock[]): ClaudeMessage => ({
+    type: 'assistant',
+    content: '',
+    raw: { content: blocks } as any,
+  });
+
+  it('keeps the streaming thinking block expanded while only thinking is present', () => {
+    const message = buildMessage([
+      { type: 'thinking', thinking: '推理内容' } as ClaudeContentBlock,
+    ]);
+
+    const { container } = renderMessageItem(message, { streamingActive: true, isLast: true });
+
+    const thinkingBlock = container.querySelector('[data-testid="content-block-thinking"]');
+    expect(thinkingBlock?.getAttribute('data-thinking-expanded')).toBe('true');
+  });
+
+  it('collapses the streaming thinking block once text content arrives after it', () => {
+    const message = buildMessage([
+      { type: 'thinking', thinking: '推理内容' } as ClaudeContentBlock,
+      { type: 'text', text: '正式回答' } as ClaudeContentBlock,
+    ]);
+
+    const { container } = renderMessageItem(message, { streamingActive: true, isLast: true });
+
+    const thinkingBlock = container.querySelector('[data-testid="content-block-thinking"]');
+    expect(thinkingBlock?.getAttribute('data-thinking-expanded')).toBe('false');
+  });
+
+  it('collapses the streaming thinking block once a tool call arrives after it', () => {
+    const message = buildMessage([
+      { type: 'thinking', thinking: '推理内容' } as ClaudeContentBlock,
+      { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } } as ClaudeContentBlock,
+    ]);
+
+    const { container } = renderMessageItem(message, { streamingActive: true, isLast: true });
+
+    const thinkingBlock = container.querySelector('[data-testid="content-block-thinking"]');
+    expect(thinkingBlock?.getAttribute('data-thinking-expanded')).toBe('false');
+  });
+
+  it('keeps a manually expanded thinking block open when new content arrives', () => {
+    const initial = buildMessage([
+      { type: 'thinking', thinking: '推理内容' } as ClaudeContentBlock,
+      { type: 'text', text: '正式回答' } as ClaudeContentBlock,
+    ]);
+
+    const view = render(
+      <MessageItem
+        message={initial}
+        messageIndex={0}
+        messageKey="message-0"
+        isLast
+        streamingActive
+        isThinking={false}
+        t={t}
+        getMessageText={getMessageText}
+        getContentBlocks={getContentBlocks}
+        findToolResult={findToolResult}
+        extractMarkdownContent={extractMarkdownContent}
+      />
+    );
+
+    // Auto-collapsed once the text block arrived; user expands it manually.
+    fireEvent.click(screen.getByTestId('toggle-thinking'));
+    expect(
+      view.container
+        .querySelector('[data-testid="content-block-thinking"]')
+        ?.getAttribute('data-thinking-expanded')
+    ).toBe('true');
+
+    // New content streams in — the manually expanded block must stay open.
+    const updated = buildMessage([
+      { type: 'thinking', thinking: '推理内容' } as ClaudeContentBlock,
+      { type: 'text', text: '正式回答' } as ClaudeContentBlock,
+      { type: 'text', text: '更多内容' } as ClaudeContentBlock,
+    ]);
+    view.rerender(
+      <MessageItem
+        message={updated}
+        messageIndex={0}
+        messageKey="message-0"
+        isLast
+        streamingActive
+        isThinking={false}
+        t={t}
+        getMessageText={getMessageText}
+        getContentBlocks={getContentBlocks}
+        findToolResult={findToolResult}
+        extractMarkdownContent={extractMarkdownContent}
+      />
+    );
+
+    expect(
+      view.container
+        .querySelector('[data-testid="content-block-thinking"]')
+        ?.getAttribute('data-thinking-expanded')
+    ).toBe('true');
   });
 });

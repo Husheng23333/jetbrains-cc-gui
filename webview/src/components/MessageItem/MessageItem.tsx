@@ -218,6 +218,30 @@ export const MessageItem = memo(function MessageItem({
     }
   }, [renderedBlocks, isMessageStreaming, manuallyExpandedThinking]);
 
+  // Collapse the streaming thinking block as soon as real output (text or a
+  // tool call) starts arriving after it — the reasoning is done by then and
+  // the user wants to see the answer, not the reasoning. Blocks the user
+  // manually expanded stay open.
+  useEffect(() => {
+    if (!isMessageStreaming) return;
+
+    let lastThinkingIndex = -1;
+    renderedBlocks.forEach((block, index) => {
+      if (block.type === 'thinking') lastThinkingIndex = index;
+    });
+    if (lastThinkingIndex < 0) return;
+
+    const hasContentAfter = renderedBlocks
+      .slice(lastThinkingIndex + 1)
+      .some((block) => block.type !== 'thinking');
+    if (!hasContentAfter) return;
+    if (manuallyExpandedThinking[lastThinkingIndex]) return;
+
+    setExpandedThinking((prev) =>
+      prev[lastThinkingIndex] ? { ...prev, [lastThinkingIndex]: false } : prev
+    );
+  }, [renderedBlocks, isMessageStreaming, manuallyExpandedThinking]);
+
   const groupedBlocks = useMemo(() => groupBlocks(renderedBlocks), [renderedBlocks]);
 
   // Register user message DOM node for anchor navigation
