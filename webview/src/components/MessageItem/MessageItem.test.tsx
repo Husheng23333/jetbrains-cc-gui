@@ -43,6 +43,8 @@ vi.mock('./ContentBlockRenderer', () => ({
 
 vi.mock('./ProviderNotConfiguredCard', () => ({
   ProviderNotConfiguredCard: () => <div data-testid="provider-not-configured-card">provider-card</div>,
+}));
+vi.mock('./providerNotConfigured', () => ({
   isProviderNotConfiguredError: () => false,
 }));
 
