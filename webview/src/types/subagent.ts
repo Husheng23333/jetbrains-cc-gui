@@ -39,6 +39,9 @@ export interface TaskEvent {
 export type TaskEventMap = Record<string, TaskEvent>;
 
 export interface SubagentHistoryResponse {
+  /** Bounded history keeps the initial task and newest records, with an explicit gap. */
+  truncated?: boolean;
+  omittedRecords?: number;
   success: boolean;
   /** True only when the sidechain transcript ends with an assistant end_turn. */
   completed?: boolean;
@@ -54,6 +57,7 @@ export interface SubagentHistoryResponse {
   sessionId?: string;
   provider?: string;
   status?: SubagentStatus;
+  resultText?: string;
   error?: string;
   messages?: unknown[];
 }
@@ -70,7 +74,9 @@ export interface SubagentStatusSnapshot {
   agentId?: string;
   agentPath?: string;
   status?: SubagentStatus;
+  resultText?: string;
   error?: string;
+  messages?: unknown[];
 }
 
 /** Batched response for restoring Codex subagent lifecycle state. */

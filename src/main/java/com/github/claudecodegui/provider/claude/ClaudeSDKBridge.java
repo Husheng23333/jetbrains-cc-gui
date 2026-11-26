@@ -14,6 +14,7 @@ import java.io.File;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.BooleanSupplier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -23,6 +24,19 @@ import java.util.concurrent.atomic.AtomicReference;
  * Handles Java to Node.js SDK communication, supports async and streaming responses.
  */
 public class ClaudeSDKBridge extends BaseSDKBridge {
+
+    // Native turns can wait for hours. Keep their blocking waits and Stop control
+    // off the shared ForkJoinPool so low-core hosts can always interrupt a turn.
+    private static final java.util.concurrent.ExecutorService CLAUDE_EXECUTOR =
+            java.util.concurrent.Executors.newCachedThreadPool(task -> {
+                Thread thread = new Thread(task, "ClaudeBridge-worker");
+                thread.setDaemon(true);
+                return thread;
+            });
+
+    public static java.util.concurrent.Executor claudeExecutor() {
+        return CLAUDE_EXECUTOR;
+    }
 
     private final ClaudeStreamAdapter streamAdapter;
     private final ClaudeRequestParamsBuilder requestParamsBuilder;
@@ -74,6 +88,14 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
         );
     }
 
+    public void setProjectTrustSupplier(java.util.function.Predicate<String> projectTrust) {
+        requestParamsBuilder.setProjectTrust(projectTrust);
+    }
+
+    public void setSessionSupplierResolver(java.util.function.Supplier<String> resolver) {
+        this.requestParamsBuilder.setSessionSupplierResolver(resolver);
+    }
+
     /**
      * Register a listener for custom daemon events (e.g., AI title generation).
      * Multiple listeners may coexist; callers MUST pair this with
@@ -91,9 +113,9 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
     }
 
     /**
-     * Call after the Claude SDK on disk is installed or updated. Every Claude daemon in the IDE
-     * keeps the SDK module it imported, so each one restarts before its next request, never in
-     * the middle of one, to load the new SDK.
+     * Call after the Claude SDK on disk is installed or updated, or after another input a daemon
+     * reads only at launch changes (the Claude config directory). Every Claude daemon in the IDE
+     * keeps what it loaded, so each one restarts before its next request, never in the middle of one.
      */
     public static void markSdkChanged() {
         ClaudeDaemonCoordinator.markSdkChanged();
@@ -123,7 +145,7 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
      * Prewarm daemon asynchronously to reduce first-message latency.
      */
     public void prewarmDaemonAsync(String cwd, String runtimeSessionEpoch) {
-        daemonCoordinator.prewarmDaemonAsync(normalizeCwdForNode(cwd), runtimeSessionEpoch, null);
+        prewarmDaemonAsync(cwd, runtimeSessionEpoch, null);
     }
 
     /**
@@ -135,7 +157,9 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
      * @param sessionId The historical session ID to resume
      */
     public void prewarmDaemonAsync(String cwd, String runtimeSessionEpoch, String sessionId) {
-        daemonCoordinator.prewarmDaemonAsync(normalizeCwdForNode(cwd), runtimeSessionEpoch, sessionId);
+        ClaudeRequestParamsBuilder.RequestCwd requestCwd = resolveRequestCwd(cwd);
+        daemonCoordinator.prewarmDaemonAsync(requestCwd.nodeCwd(), runtimeSessionEpoch, sessionId,
+                requestCwd.projectTrusted());
     }
 
     public void resetPersistentRuntime(String runtimeSessionEpoch) {
@@ -165,6 +189,32 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
         }
         // Also try per-process interrupt (covers per-process fallback mode)
         super.interruptChannel(channelId);
+    }
+
+    /** Stops the captured native runtime, including workflows running between foreground turns. */
+    public void interruptChannel(String channelId, String sessionId, String runtimeSessionEpoch) {
+        DaemonBridge db = daemonCoordinator.getCurrentDaemonBridge();
+        try {
+            if (db != null && db.isAlive()) {
+                JsonObject params = new JsonObject();
+                params.addProperty("sessionId", sessionId);
+                params.addProperty("runtimeSessionEpoch", runtimeSessionEpoch);
+                Boolean acknowledged = db.sendCommand("claude.abortTurn", params, new DaemonBridge.DaemonOutputCallback() {
+                    @Override public void onLine(String line) { }
+                    @Override public void onStderr(String text) { }
+                    @Override public void onError(String error) { LOG.warn("[ClaudeSDKBridge] Abort failed: " + error); }
+                    @Override public void onComplete(boolean success) { }
+                }).orTimeout(10, java.util.concurrent.TimeUnit.SECONDS).join();
+                // An already-retired runtime is a successful control no-op. The original
+                // send's terminal event, not this control Boolean, proves cancellation.
+                if (!Boolean.TRUE.equals(acknowledged)) {
+                    throw new IllegalStateException("Claude runtime could not be interrupted");
+                }
+            }
+        } finally {
+            // Per-process fallback retains its channel-scoped process ownership.
+            super.interruptChannel(channelId);
+        }
     }
 
     // ============================================================================
@@ -412,14 +462,38 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             String reasoningEffort,
             MessageCallback callback
     ) {
-        String normalizedCwd = normalizeCwdForNode(cwd);
+        return sendMessage(channelId, message, sessionId, runtimeSessionEpoch, cwd, attachments,
+                permissionMode, model, openedFiles, agentPrompt, streaming, disableThinking,
+                reasoningEffort, false, callback);
+    }
+
+    public CompletableFuture<SDKResult> sendMessage(
+            String channelId,
+            String message,
+            String sessionId,
+            String runtimeSessionEpoch,
+            String cwd,
+            List<ClaudeSession.Attachment> attachments,
+            String permissionMode,
+            String model,
+            JsonObject openedFiles,
+            String agentPrompt,
+            Boolean streaming,
+            Boolean disableThinking,
+            String reasoningEffort,
+            boolean ultracode,
+            MessageCallback callback
+    ) {
+        ClaudeRequestParamsBuilder.RequestCwd requestCwd = resolveRequestCwd(cwd);
+        String normalizedCwd = requestCwd.nodeCwd();
+        boolean projectTrusted = requestCwd.projectTrusted();
 
         // Try daemon mode first (avoids per-request Node.js process spawning)
         DaemonBridge db = daemonCoordinator.getDaemonBridge();
         if (db != null) {
             return sendMessageViaDaemon(db, channelId, message, sessionId, runtimeSessionEpoch, normalizedCwd,
                     attachments, permissionMode, model, openedFiles, agentPrompt,
-                    streaming, disableThinking, reasoningEffort, callback);
+                    streaming, disableThinking, reasoningEffort, ultracode, projectTrusted, callback);
         }
 
         // Fallback: per-process mode (spawns a new Node.js process per request)
@@ -438,6 +512,8 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 streaming,
                 disableThinking,
                 reasoningEffort,
+                ultracode,
+                projectTrusted,
                 callback
         );
     }
@@ -457,6 +533,15 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
         return sessionQueryService.getSessionMessagesPage(sessionId, cwd, beforeTurn, limit);
     }
 
+    public JsonObject getSessionMessagesPage(String sessionId, String cwd, Integer beforeTurn, int limit,
+                                             BooleanSupplier cancellation) {
+        return sessionQueryService.getSessionMessagesPage(sessionId, cwd, beforeTurn, limit, cancellation);
+    }
+
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd, BooleanSupplier cancellation) {
+        return sessionQueryService.getSessionMessages(sessionId, cwd, cancellation);
+    }
+
     public JsonObject getLatestClaudeUserMessage(String sessionId, String cwd) {
         return sessionQueryService.getLatestUserMessage(sessionId, cwd);
     }
@@ -465,21 +550,23 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
      * Get MCP server connection status.
      */
     public CompletableFuture<List<JsonObject>> getMcpServerStatus(String cwd) {
-        return mcpQueryService.getMcpServerStatus(normalizeCwdForNode(cwd));
+        ClaudeRequestParamsBuilder.RequestCwd requestCwd = resolveRequestCwd(cwd);
+        return mcpQueryService.getMcpServerStatus(requestCwd.nodeCwd(), requestCwd.projectTrusted());
     }
 
     /**
      * Get MCP server tools list.
      */
     public CompletableFuture<JsonObject> getMcpServerTools(String serverId) {
-        return mcpQueryService.getMcpServerTools(serverId, null);
+        return mcpQueryService.getMcpServerTools(serverId, null, false);
     }
 
     /**
      * Get MCP server tools list with working directory for project-specific config resolution.
      */
     public CompletableFuture<JsonObject> getMcpServerTools(String serverId, String cwd) {
-        return mcpQueryService.getMcpServerTools(serverId, normalizeCwdForNode(cwd));
+        ClaudeRequestParamsBuilder.RequestCwd requestCwd = resolveRequestCwd(cwd);
+        return mcpQueryService.getMcpServerTools(serverId, requestCwd.nodeCwd(), requestCwd.projectTrusted());
     }
 
     // ============================================================================
@@ -525,16 +612,9 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             return CompletableFuture.completedFuture(error);
         }
 
-        JsonObject params = new JsonObject();
-        if (sessionId != null && !sessionId.isEmpty()) {
-            params.addProperty("sessionId", sessionId);
-        }
-        if (cwd != null && !cwd.isEmpty()) {
-            params.addProperty("cwd", cwd);
-        }
-        if (model != null && !model.isEmpty()) {
-            params.addProperty("model", model);
-        }
+        ClaudeRequestParamsBuilder.RequestCwd requestCwd = resolveRequestCwd(cwd);
+        JsonObject params = buildContextUsageParams(sessionId, requestCwd, model);
+        this.requestParamsBuilder.addSessionSupplier(params);
 
         AtomicReference<JsonObject> resultRef = new AtomicReference<>();
         CompletableFuture<JsonObject> resultFuture = new CompletableFuture<>();
@@ -607,6 +687,95 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             err.addProperty("error", "getContextUsage timed out after 180 seconds (SDK may be loading)");
             return err;
         });
+    }
+
+    /**
+     * Regenerate a session's AI title from its conversation content.
+     * Calls the daemon's claude.regenerateTitle command (read-only bypass,
+     * never queued behind an active turn) and returns its result envelope:
+     * {success, title} on success or {success:false, code} on failure.
+     *
+     * @param sessionId  The session whose title should be regenerated
+     * @param cwd        Working directory used to locate the session file
+     * @param supplierId Supplier the conversation is bound to, or null for the global profile
+     * @return CompletableFuture with the daemon response as JsonObject
+     */
+    public CompletableFuture<JsonObject> regenerateSessionTitle(String sessionId, String cwd, String supplierId) {
+        DaemonBridge db = this.daemonCoordinator.getDaemonBridge();
+        if (db == null) {
+            return CompletableFuture.completedFuture(regenerationError("daemon_unavailable",
+                    "Daemon not available. Title regeneration requires daemon mode."));
+        }
+
+        JsonObject params = new JsonObject();
+        params.addProperty("sessionId", sessionId);
+        if (cwd != null && !cwd.isEmpty()) {
+            params.addProperty("cwd", cwd);
+        }
+        if (supplierId != null && !supplierId.isBlank()) {
+            params.addProperty("supplierId", supplierId);
+        }
+
+        AtomicReference<JsonObject> resultRef = new AtomicReference<>();
+        CompletableFuture<JsonObject> resultFuture = new CompletableFuture<>();
+
+        DaemonBridge.DaemonOutputCallback callback = new DaemonBridge.DaemonOutputCallback() {
+            @Override
+            public void onLine(String line) {
+                try {
+                    resultRef.set(ClaudeSDKBridge.this.gson.fromJson(line, JsonObject.class));
+                } catch (Exception ignored) {
+                }
+            }
+            @Override
+            public void onStderr(String text) { }
+            @Override
+            public void onResult(JsonObject response) {
+                resultRef.set(response);
+            }
+            @Override
+            public void onError(String error) {
+                if (!resultFuture.isDone()) {
+                    resultFuture.complete(regenerationError("daemon_error", error));
+                }
+            }
+            @Override
+            public void onComplete(boolean success) {
+                if (!resultFuture.isDone()) {
+                    JsonObject result = resultRef.get();
+                    if (result != null) {
+                        resultFuture.complete(result);
+                    } else {
+                        resultFuture.complete(regenerationError("daemon_no_response",
+                                success ? "No response received" : "Title regeneration command failed"));
+                    }
+                }
+            }
+        };
+
+        try {
+            CompletableFuture<Boolean> commandFuture = db.sendCommand("claude.regenerateTitle", params, callback);
+            commandFuture.exceptionally(ex -> {
+                if (!resultFuture.isDone()) {
+                    resultFuture.complete(regenerationError("daemon_error", ex.getMessage()));
+                }
+                return false;
+            });
+        } catch (Exception e) {
+            LOG.error("[ClaudeSDKBridge] regenerateSessionTitle failed: " + e.getMessage(), e);
+            return CompletableFuture.completedFuture(regenerationError("daemon_error", e.getMessage()));
+        }
+
+        return resultFuture.orTimeout(90, TimeUnit.SECONDS).exceptionally(ex -> regenerationError(
+                "daemon_timeout", "Title regeneration timed out after 90 seconds"));
+    }
+
+    private static JsonObject regenerationError(String code, String message) {
+        JsonObject err = new JsonObject();
+        err.addProperty("success", false);
+        err.addProperty("code", code);
+        err.addProperty("error", message != null ? message : "Unknown error");
+        return err;
     }
 
     /**
@@ -729,6 +898,8 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
             Boolean streaming,
             Boolean disableThinking,
             String reasoningEffort,
+            boolean ultracode,
+            boolean projectTrusted,
             MessageCallback callback
     ) {
         return daemonRequestExecutor.sendMessageViaDaemon(
@@ -746,8 +917,31 @@ public class ClaudeSDKBridge extends BaseSDKBridge {
                 streaming,
                 disableThinking,
                 reasoningEffort,
+                ultracode,
+                projectTrusted,
                 callback
         );
+    }
+
+    /** The cwd Node runs in, with trust decided on the IDE's form of the same path. */
+    private ClaudeRequestParamsBuilder.RequestCwd resolveRequestCwd(String cwd) {
+        return requestParamsBuilder.resolveRequestCwd(cwd, this::normalizeCwdForNode);
+    }
+
+    static JsonObject buildContextUsageParams(String sessionId, ClaudeRequestParamsBuilder.RequestCwd requestCwd, String model) {
+        JsonObject params = new JsonObject();
+        if (sessionId != null && !sessionId.isEmpty()) {
+            params.addProperty("sessionId", sessionId);
+        }
+        String nodeCwd = requestCwd.nodeCwd();
+        if (nodeCwd != null && !nodeCwd.isEmpty()) {
+            params.addProperty("cwd", nodeCwd);
+        }
+        if (model != null && !model.isEmpty()) {
+            params.addProperty("model", model);
+        }
+        params.addProperty("projectTrusted", requestCwd.projectTrusted());
+        return params;
     }
 
     /**

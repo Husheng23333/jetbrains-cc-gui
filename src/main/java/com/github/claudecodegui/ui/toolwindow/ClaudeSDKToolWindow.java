@@ -61,6 +61,29 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
         return instances.get(project);
     }
 
+    public static List<ClaudeChatWindow> getChatWindows(Project project) {
+        ToolWindow toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID);
+        if (toolWindow == null) {
+            return Collections.emptyList();
+        }
+        List<ClaudeChatWindow> result = new java.util.ArrayList<>();
+        for (Content content : toolWindow.getContentManager().getContents()) {
+            ClaudeChatWindow window = contentToWindowMap.get(content);
+            if (window != null && !window.isDisposed()) {
+                result.add(window);
+            }
+        }
+        return result;
+    }
+
+    public static ClaudeChatWindow getSelectedChatWindow(Project project) {
+        ToolWindow toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID);
+        if (toolWindow == null) {
+            return null;
+        }
+        return contentToWindowMap.get(toolWindow.getContentManager().getSelectedContent());
+    }
+
     public static String getNextTabName(ToolWindow toolWindow) {
         if (toolWindow == null) {
             return TAB_NAME_PREFIX + "1";
@@ -236,6 +259,34 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
 
         registerShutdownHook();
 
+        // Lets the review service evict orphaned handoff drafts whose chat target no
+        // longer exists, without the storage layer depending on tool-window classes.
+        com.github.claudecodegui.markdown.MarkdownReviewService.getInstance(project).setLiveTargetsSupplier(() -> {
+            // Runs inside the service monitor during saveBatch eviction; the
+            // ToolWindow/ContentManager queries below are only valid on the EDT.
+            com.intellij.openapi.application.ApplicationManager.getApplication().assertIsDispatchThread();
+            return getChatWindows(project).stream().map(ClaudeChatWindow::getReviewTargetId)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        });
+
+        // Routes withdrawal snapshots (their annotation was completed or deleted) to
+        // the chat that owns the automatic draft; the window rejects stale identities.
+        com.github.claudecodegui.markdown.MarkdownReviewService.getInstance(project).setBatchPusher(push -> {
+            com.intellij.openapi.application.ApplicationManager.getApplication().assertIsDispatchThread();
+            for (ClaudeChatWindow window : getChatWindows(project)) {
+                if (push.targetId.equals(window.getReviewTargetId())) {
+                    try {
+                        window.addArtifactReview(push);
+                    } catch (RuntimeException error) {
+                        // The target moved on (session switch); its webview already
+                        // discarded these drafts at the target change.
+                        LOG.warn("Markdown review withdrawal skipped: " + error.getMessage());
+                    }
+                    return;
+                }
+            }
+        });
+
         ContentFactory contentFactory = ContentFactory.getInstance();
         ContentManager contentManager = toolWindow.getContentManager();
 
@@ -341,6 +392,8 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
                 }
                 ClaudeChatWindow window = contentToWindowMap.get(event.getContent());
                 if (window != null) {
+                    TabStateService.getInstance(project).saveSelectedTabIndex(
+                            contentManager.getIndexOfContent(event.getContent()));
                     window.onTabActivated();
                     window.loadRestoredHistoryIfNeeded();
                 }
@@ -360,11 +413,19 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
                 int removedIndex = event.getIndex();
                 TabStateService tabStateService = TabStateService.getInstance(project);
                 tabStateService.onTabRemoved(removedIndex);
+                Content selectedContent = contentManager.getSelectedContent();
+                tabStateService.saveSelectedTabIndex(
+                        selectedContent == null ? 0 : contentManager.getIndexOfContent(selectedContent));
 
                 ClaudeChatWindow window = contentToWindowMap.get(removedContent);
                 if (window != null) {
                     LOG.info("[TabManager] Disposing ClaudeChatWindow for removed tab: "
                         + removedContent.getDisplayName());
+                    // An explicit tab close abandons its unsent review drafts (R3);
+                    // IDE/project shutdown goes through disposeProjectChatWindows
+                    // instead, so still-open tabs keep their recoverable drafts.
+                    com.github.claudecodegui.markdown.MarkdownReviewService.getInstance(project)
+                            .dropPending(window.getReviewTargetId());
                     window.dispose();
                 }
             }
@@ -478,9 +539,10 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
     ) {
         TabStateService tabStateService = TabStateService.getInstance(project);
         int savedTabCount = tabStateService.getTabCount();
+        int selectedIndex = tabStateService.getSelectedTabIndex();
         LOG.info("[TabManager] Restoring " + savedTabCount + " tabs from storage");
 
-        ClaudeChatWindow firstChatWindow = new ClaudeChatWindow(project, false);
+        ClaudeChatWindow firstChatWindow = new ClaudeChatWindow(project, false, false);
         String firstTabName = resolveRestoredTabName(tabStateService, 0);
         TabStateService.TabSessionState firstSavedState = tabStateService.getTabSessionState(0);
 
@@ -488,7 +550,7 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
         loadingContent.setDisplayName(firstTabName);
         firstChatWindow.setParentContent(loadingContent);
         loadingContent.setDisposer(firstChatWindow::dispose);
-        restoreTabSessionState(firstSavedState, 0, firstChatWindow, true);
+        restoreTabSessionState(firstSavedState, 0, firstChatWindow, selectedIndex == 0);
 
         for (int i = 1; i < savedTabCount; i++) {
             ClaudeChatWindow chatWindow = new ClaudeChatWindow(project, true, false);
@@ -503,6 +565,7 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
         }
 
         updateTabCloseableState(contentManager);
+        resumeRestoredWorkspace(project, contentManager, selectedIndex);
     }
 
     private void createChatWindowContent(
@@ -512,11 +575,12 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
     ) {
         TabStateService tabStateService = TabStateService.getInstance(project);
         int savedTabCount = tabStateService.getTabCount();
+        int selectedIndex = tabStateService.getSelectedTabIndex();
         LOG.info("[TabManager] Restoring " + savedTabCount + " tabs from storage");
 
         for (int i = 0; i < savedTabCount; i++) {
             boolean isFirstTab = (i == 0);
-            ClaudeChatWindow chatWindow = new ClaudeChatWindow(project, !isFirstTab, isFirstTab);
+            ClaudeChatWindow chatWindow = new ClaudeChatWindow(project, !isFirstTab, false);
             String tabName = resolveRestoredTabName(tabStateService, i);
             TabStateService.TabSessionState savedState = tabStateService.getTabSessionState(i);
 
@@ -525,10 +589,51 @@ public class ClaudeSDKToolWindow implements ToolWindowFactory, DumbAware {
             chatWindow.setOriginalTabName(tabName);
             content.setDisposer(chatWindow::dispose);
             contentManager.addContent(content);
-            restoreTabSessionState(savedState, i, chatWindow, isFirstTab);
+            restoreTabSessionState(savedState, i, chatWindow, i == selectedIndex);
         }
 
         updateTabCloseableState(contentManager);
+        resumeRestoredWorkspace(project, contentManager, selectedIndex);
+    }
+
+    /** Restore focus first, then stagger background allocation so saved tabs do not delay typing. */
+    private void resumeRestoredWorkspace(Project project, ContentManager manager, int selectedIndex) {
+        Content selected = manager.getContents()[selectedIndex];
+        manager.setSelectedContent(selected);
+        TabStateService.getInstance(project).saveSelectedTabIndex(selectedIndex);
+        ClaudeChatWindow selectedWindow = contentToWindowMap.get(selected);
+        if (selectedWindow != null) {
+            selectedWindow.preloadRestoredTab();
+        }
+        java.util.ArrayDeque<Content> remaining = new java.util.ArrayDeque<>(List.of(manager.getContents()));
+        remaining.remove(selected);
+        if (remaining.isEmpty()) {
+            return;
+        }
+        Timer timer = new Timer(500, event -> {
+            Timer source = (Timer) event.getSource();
+            if (project.isDisposed() || manager.getContentCount() == 0) {
+                source.stop();
+                return;
+            }
+            Content current = manager.getSelectedContent();
+            ClaudeChatWindow active = current == null ? null : contentToWindowMap.get(current);
+            if (active != null && !active.isDisposed() && !active.isReadyForBackgroundPreload()) {
+                return;
+            }
+            while (!remaining.isEmpty()) {
+                Content content = remaining.removeFirst();
+                ClaudeChatWindow window = contentToWindowMap.get(content);
+                if (window != null && !window.isDisposed() && manager.getIndexOfContent(content) >= 0) {
+                    window.preloadRestoredTab();
+                    break;
+                }
+            }
+            if (remaining.isEmpty()) {
+                source.stop();
+            }
+        });
+        timer.start();
     }
 
     private void restoreTabSessionState(

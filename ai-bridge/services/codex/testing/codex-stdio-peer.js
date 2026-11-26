@@ -24,6 +24,8 @@ import { createInterface } from 'node:readline';
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash, randomUUID } from 'node:crypto';
+import { parse } from 'smol-toml';
 
 export const PEER_PROTOCOL_VERSION = 1;
 
@@ -111,11 +113,11 @@ export class PeerTrace {
   }
 }
 
-function turnCompleted(turnId, status = 'completed') {
+function turnCompleted(turnId, status = 'completed', threadId = THREAD_ID) {
   return {
     method: 'turn/completed',
     params: {
-      threadId: THREAD_ID,
+      threadId,
       turn: { id: turnId, status, error: null },
       usage: null,
     },
@@ -126,7 +128,56 @@ function normalizedServiceTier(tier) {
   return tier === 'fast' ? 'priority' : tier === null ? 'default' : tier;
 }
 
+function nativeProviderOverrides() {
+  return Object.assign({}, ...process.argv.flatMap((arg, index, argv) =>
+    arg === '-c' ? [parse(argv[index + 1])] : []));
+}
+
 export const SCENARIOS = {
+  'session-supplier': {
+    async onThreadStart(params, ctx) {
+      ctx.threadSettings = params;
+      ctx.reply(ctx.currentId, makeThreadStartResponse(params));
+    },
+    async onThreadResume(params, ctx) {
+      if (params.threadId === 'th-test-legacy-supplier') {
+        const currentModelProvider = nativeProviderOverrides().model_provider;
+        if (currentModelProvider !== 'OpenAI') {
+          ctx.replyError(ctx.currentId, { code: -32600,
+            message: 'This chat uses OpenAI, but the current provider differs',
+            data: { type: 'modelProviderMismatch', modelProvider: 'OpenAI', currentModelProvider } });
+          return;
+        }
+      }
+      return SCENARIOS['session-supplier'].onThreadStart(params, ctx);
+    },
+    async onTurnsList(_params, ctx) {
+      ctx.reply(ctx.currentId, { data: [{ id: ctx.supplierTurnId, status: 'completed', items: [ctx.supplierPlan] }], nextCursor: null });
+    },
+    async onTurnStart(params, ctx) {
+      const overrides = nativeProviderOverrides();
+      const providerId = ctx.threadSettings.modelProvider;
+      if (overrides.model_provider !== providerId || !overrides.model_providers?.[providerId]) {
+        ctx.replyError(ctx.currentId, { code: -32600,
+          message: `This chat uses ${providerId}, but the process provider does not match` });
+        return;
+      }
+      const turnId = `supplier-turn-${randomUUID()}`;
+      ctx.supplierTurnId = turnId;
+      ctx.supplierPlan = { id: `supplier-plan-${turnId}`, type: 'plan', text: 'authoritative supplier plan', status: 'completed' };
+      ctx.reply(ctx.currentId, { turn: { id: turnId } });
+      await ctx.sleep(40);
+      const entry = overrides.model_providers[providerId];
+      ctx.notify({ method: 'item/completed', params: { threadId: params.threadId, turnId,
+        item: { id: `supplier-status-${turnId}`, type: 'agentMessage', text: JSON.stringify({
+          baseUrl: entry?.base_url, providerId, codexHome: process.env.CODEX_HOME,
+          model: params.model, collaborationMode: params.collaborationMode,
+          credentialHash: createHash('sha256').update(process.env[entry?.env_key] || '').digest('hex'),
+        }) } } });
+      ctx.notify({ method: 'item/completed', params: { threadId: params.threadId, turnId, item: ctx.supplierPlan } });
+      ctx.notify(turnCompleted(turnId, 'completed', params.threadId));
+    },
+  },
   'credential-env': {
     async onTurnStart(params, ctx) {
       const configured = Boolean(process.env.CODEMOSS_TEST_NATIVE_KEY);
@@ -157,6 +208,22 @@ export const SCENARIOS = {
         turn: { id: turnId, status: 'inProgress' } } });
       ctx.notify({ method: 'item/completed', params: { threadId: THREAD_ID, turnId,
         item: { id: 'prepared-compaction', type: 'contextCompaction' } } });
+      ctx.notify(turnCompleted(turnId));
+    },
+  },
+  'permission-settings': {
+    async onThreadStart(params, ctx) {
+      ctx.threadSettings = params;
+      ctx.reply(ctx.currentId, { thread: { id: THREAD_ID } });
+    },
+    async onTurnStart(params, ctx) {
+      const turnId = `permission-turn-${ctx.currentId}`;
+      ctx.reply(ctx.currentId, { turn: { id: turnId } });
+      ctx.notify({ method: 'item/completed', params: { threadId: THREAD_ID, turnId,
+        item: { id: 'permission-status', type: 'agentMessage', text: JSON.stringify({
+          threadSandbox: ctx.threadSettings.sandbox, sandboxPolicy: params.sandboxPolicy,
+          approvalPolicy: params.approvalPolicy, approvalsReviewer: params.approvalsReviewer,
+        }) } } });
       ctx.notify(turnCompleted(turnId));
     },
   },
@@ -252,16 +319,28 @@ export const SCENARIOS = {
   },
   'whole-session-edits': {
     async onThreadRead(params, ctx) {
-      if (params.fileChangesOnly !== undefined) {
-        ctx.replyError(ctx.currentId, { code: -32602, message: 'unknown native parameter' });
+      if (params.fileChangesOnly !== undefined || params.includeTurns === true || params.excludeTurns !== true) {
+        ctx.notify({ method: 'deprecationNotice', params: { summary: 'Full-history hydration is deprecated for paginated threads' } });
+        ctx.replyError(ctx.currentId, { code: -32602, message: 'Edit reads must use native pagination' });
         return;
       }
-      ctx.reply(ctx.currentId, { thread: { id: params.threadId, turns: Array.from({ length: 40 }, (_, index) => ({
-        id: `turn-${index}`, items: [
-          { id: `edit-${index}`, type: 'fileChange', status: 'completed', changes: [{ path: `/file-${index}.ts`, kind: 'add', diff: '+created' }] },
-          { id: `command-${index}`, type: 'commandExecution', command: 'inspect', aggregatedOutput: 'large output'.repeat(100) },
-        ],
-      })) } });
+      ctx.reply(ctx.currentId, { thread: { id: params.threadId } });
+    },
+    async onTurnsList(params, ctx) {
+      if (params.cursor !== null && params.cursor !== 'older-edits/+=') {
+        ctx.replyError(ctx.currentId, { code: -32602, message: 'Unexpected edit cursor' });
+        return;
+      }
+      const offset = params.cursor === null ? 0 : 30;
+      ctx.reply(ctx.currentId, { data: Array.from({ length: offset === 0 ? 30 : 10 }, (_, position) => {
+        const index = 39 - offset - position;
+        return {
+          id: `turn-${index}`, items: [
+            { id: `edit-${index}`, type: 'fileChange', status: 'completed', changes: [{ path: `/file-${index}.ts`, kind: 'add', diff: '+created' }] },
+            { id: `command-${index}`, type: 'commandExecution', command: 'inspect', aggregatedOutput: 'large output'.repeat(100) },
+          ],
+        };
+      }), nextCursor: offset === 0 ? 'older-edits/+=' : null });
     },
   },
   'image-view': {
@@ -697,6 +776,60 @@ export const SCENARIOS = {
     },
   },
 
+  /** A blocking native question exercises the JSON-RPC answer path. */
+  'blocking-user-input': {
+    async onTurnStart(_params, ctx) {
+      ctx.reply(ctx.currentId, { turn: { id: TURN_ID, status: 'inProgress' } });
+      ctx.notify({ method: 'turn/started', params: { threadId: THREAD_ID,
+        turn: { id: TURN_ID, status: 'inProgress' } } });
+      const requestId = ctx.nextServerId();
+      ctx.serverRequest(requestId, 'item/tool/requestUserInput', {
+        threadId: THREAD_ID, turnId: TURN_ID, itemId: 'blocking-question',
+        questions: [{ id: 'choice', header: 'Test', question: 'Choose A, B or C',
+          options: ['A', 'B', 'C'].map(label => ({ label, description: '' })) }],
+      });
+      const response = await ctx.waitServerResponse(requestId);
+      ctx.notify({ method: 'item/completed', params: { threadId: THREAD_ID, turnId: TURN_ID,
+        item: { type: 'agentMessage', id: 'blocking-answer', text: JSON.stringify(response) } } });
+      ctx.notify(turnCompleted(TURN_ID));
+    },
+  },
+
+  /** Codex 0.163 async questions arrive inside agent items, without a reverse RPC. */
+  'async-question': {
+    async onTurnStart(params, ctx) {
+      ctx.asyncQuestionTurnId = `turn-async-${ctx.currentId}`;
+      ctx.reply(ctx.currentId, { turn: { id: ctx.asyncQuestionTurnId, status: 'inProgress' } });
+      ctx.notify({ method: 'turn/started', params: { threadId: THREAD_ID,
+        turn: { id: ctx.asyncQuestionTurnId, status: 'inProgress' } } });
+      const answered = ctx.asyncQuestionSent;
+      ctx.asyncQuestionSent = true;
+      ctx.notify({ method: 'item/completed', params: { threadId: THREAD_ID, turnId: ctx.asyncQuestionTurnId,
+        item: answered ? { type: 'agentMessage', id: 'async-answer', text: params.input[0].text }
+          : { type: 'agentMessage', id: 'async-question', text: 'Choose A, B or C', delivery: 'async',
+            questions: [{ title: 'Choose A, B or C', options: ['A', 'B', 'C'] }] } } });
+      if (answered || ctx.asyncQuestionCompletes) ctx.notify({ method: 'turn/completed',
+        params: { threadId: THREAD_ID, turn: { id: ctx.asyncQuestionTurnId, status: 'completed' } } });
+    },
+    async onTurnSteer(params, ctx) {
+      if (params.expectedTurnId !== ctx.asyncQuestionTurnId) {
+        ctx.replyError(ctx.currentId, { code: -32602, message: 'Expected the active question turn' });
+        return;
+      }
+      ctx.reply(ctx.currentId, { turnId: ctx.asyncQuestionTurnId });
+      ctx.notify({ method: 'item/completed', params: { threadId: THREAD_ID, turnId: ctx.asyncQuestionTurnId,
+        item: { type: 'agentMessage', id: 'async-answer', text: params.input[0].text } } });
+      ctx.notify({ method: 'turn/completed', params: { threadId: THREAD_ID,
+        turn: { id: ctx.asyncQuestionTurnId, status: 'completed' } } });
+    },
+  },
+  'async-question-completed': {
+    async onTurnStart(params, ctx) {
+      ctx.asyncQuestionCompletes = true;
+      await SCENARIOS['async-question'].onTurnStart(params, ctx);
+    },
+  },
+
   /** turn/start is notified but never acknowledged (late-ack fixtures). */
   'never-respond': {
     async onTurnStart(_params, ctx) {
@@ -897,10 +1030,11 @@ export const SCENARIOS = {
 export const SCENARIO_NAMES = Object.keys(SCENARIOS);
 
 class PeerContext {
-  constructor({ scenario, trace, quiet, output = process.stdout, writeStderr = null, onExit = null }) {
+  constructor({ scenario, trace, quiet, output = process.stdout, writeStderr = null, onExit = null, userAgent = 'codex-test-peer/1.0' }) {
     this.scenario = scenario;
     this.trace = trace;
     this.quiet = quiet;
+    this.userAgent = userAgent;
     this.output = output;
     this.writeStderrFn = writeStderr || ((text) => process.stderr.write(text));
     this.onExitFn = onExit || ((code) => process.exit(code));
@@ -990,7 +1124,7 @@ class PeerContext {
         await this.scenario.onInitialize(params, this);
         return;
       }
-      this.reply(id, { userAgent: 'codex-test-peer/1.0', authMode: null });
+      this.reply(id, { userAgent: this.userAgent, authMode: null });
       return;
     }
     if (method === 'initialized') {
@@ -1001,6 +1135,7 @@ class PeerContext {
       ['thread/start', 'onThreadStart'],
       ['thread/resume', 'onThreadResume'],
       ['turn/start', 'onTurnStart'],
+      ['turn/steer', 'onTurnSteer'],
       ['turn/interrupt', 'onTurnInterrupt'],
       ['thread/compact/start', 'onCompactStart'],
     ];
@@ -1012,7 +1147,7 @@ class PeerContext {
     }
     if (method === 'turn/interrupt') {
       this.reply(id, {});
-      this.notify(turnCompleted(TURN_ID, 'interrupted'));
+      this.notify(turnCompleted(params?.turnId || TURN_ID, 'interrupted'));
       return;
     }
     if (method === 'thread/settings/update') {
@@ -1132,6 +1267,7 @@ export function startPeerWithStreams({
   output,
   stderr = null,
   onExit = null,
+  userAgent = 'codex-test-peer/1.0',
 } = {}) {
   const scenario = SCENARIOS[scenarioName || 'early-notification'];
   if (!scenario) {
@@ -1144,6 +1280,7 @@ export function startPeerWithStreams({
     output,
     writeStderr: stderr ? (text) => stderr.write(text) : null,
     onExit: onExit || null,
+    userAgent,
   });
   attachPeerInput(ctx, input, trace);
   return ctx;

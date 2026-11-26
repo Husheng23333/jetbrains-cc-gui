@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
@@ -163,6 +164,150 @@ public class SessionMessageOrchestratorTest {
     }
 
     @Test
+    public void invisibleHistoryRestoreDoesNotTakeOwnershipFromUserLoad() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("session-restore");
+        state.setCwd("/workspace");
+        Object userLoadOwner = new Object();
+        state.claimLoading(userLoadOwner);
+        RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state,
+                new MessageParser(),
+                new SessionCallbackFacade(null),
+                historyAccess,
+                (usedTokens, maxTokens) -> { },
+                0,
+                0);
+
+        try {
+            orchestrator.loadFromServer(() -> false).join();
+            fail("An overlapping restore must remain retryable instead of reporting success");
+        } catch (java.util.concurrent.CompletionException expected) {
+            assertTrue(expected.getCause() instanceof SessionMessageOrchestrator.HistoryLoadNotCommittedException);
+        }
+
+        assertTrue(state.isLoading());
+        assertTrue(state.ownsLoading(userLoadOwner));
+        assertEquals(0, historyAccess.providerHistoryRequests.get());
+    }
+
+    @Test
+    public void liveSendDuringRestorePreservesMessagesAndReportsRetryableDiscard() throws Exception {
+        SessionState state = new SessionState();
+        state.setProvider("codex");
+        state.setSessionId("restored-session");
+        state.setCwd("/workspace");
+        CountDownLatch readStarted = new CountDownLatch(1);
+        CountDownLatch releaseRead = new CountDownLatch(1);
+        SessionMessageOrchestrator.SessionHistoryAccess access = new SessionMessageOrchestrator.SessionHistoryAccess() {
+            @Override
+            public List<JsonObject> getProviderSessionMessages(String provider, String sessionId, String cwd) {
+                readStarted.countDown();
+                try {
+                    assertTrue(releaseRead.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(error);
+                }
+                return List.of(createProviderMessage("user", "old history"));
+            }
+
+            @Override
+            public JsonObject getLatestClaudeUserMessage(String sessionId, String cwd) {
+                return null;
+            }
+        };
+        RecordingCallback callback = new RecordingCallback();
+        SessionCallbackFacade facade = new SessionCallbackFacade(null);
+        facade.setCallback(callback);
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state, new MessageParser(), facade, access, (used, max) -> { }, 0, 0);
+        var restore = orchestrator.loadFromServer(() -> false);
+        try {
+            assertTrue(readStarted.await(5, TimeUnit.SECONDS));
+            state.addMessage(new MessageParser().parseServerMessage(createProviderMessage("user", "live send")));
+        } finally {
+            releaseRead.countDown();
+        }
+        try {
+            restore.join();
+            fail("A discarded restore must not be reported as loaded");
+        } catch (java.util.concurrent.CompletionException expected) {
+            assertTrue(expected.getCause() instanceof SessionMessageOrchestrator.HistoryLoadNotCommittedException);
+        }
+        assertEquals(List.of("live send"), state.getMessages().stream().map(message -> message.content).toList());
+        assertTrue(callback.messageUpdates.isEmpty());
+        assertEquals("restored-session", state.getSessionId());
+    }
+
+    @Test
+    public void missingStartupHistoryRetiresSessionWithinRestoreCommitGate() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("missing-restored-session");
+        state.setCwd("/workspace");
+        RecordingHistoryAccess access = new RecordingHistoryAccess();
+        access.providerHistoryFailure = new SessionHistoryNotFoundException("missing-restored-session", "/workspace");
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state, new MessageParser(), new SessionCallbackFacade(null), access, (used, max) -> { }, 0, 0);
+        AtomicBoolean committed = new AtomicBoolean();
+        orchestrator.loadFromServer(new SessionMessageOrchestrator.HistoryLoadCancellation() {
+            @Override
+            public boolean isCancelled() {
+                return false;
+            }
+
+            @Override
+            public boolean commitIfActive(Runnable mutation) {
+                assertEquals("missing-restored-session", state.getSessionId());
+                mutation.run();
+                committed.set(true);
+                return true;
+            }
+        }).join();
+        assertTrue(committed.get());
+        assertNull(state.getSessionId());
+        assertTrue(state.getMessages().isEmpty());
+    }
+
+    @Test
+    public void ordinaryHistoryKeepsLegacyReadersWhileStartupUsesCancellableReaders() {
+        for (String provider : List.of("grok", "minimax", "dsh", "zcode", "codex", "kimi", "omp", "pi", "opencode")) {
+            SessionState state = new SessionState();
+            state.setProvider(provider);
+            state.setSessionId("restored-session");
+            state.setCwd("/workspace");
+            RecordingHistoryAccess access = new RecordingHistoryAccess();
+            SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                    state, new MessageParser(), new SessionCallbackFacade(null), access, (used, max) -> { }, 0, 0);
+            orchestrator.loadFromServer().join();
+            assertEquals(provider, 0, access.cancellableHistoryRequests.get());
+            assertEquals(provider, 1, access.providerHistoryRequests.get());
+            orchestrator.loadFromServer(() -> false).join();
+            assertEquals(provider, 1, access.cancellableHistoryRequests.get());
+        }
+    }
+
+    @Test
+    public void ordinaryClaudePaginationKeepsLegacyOverloadWhileRestoreUsesCancellation() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("restored-session");
+        state.setCwd("/workspace");
+        RecordingHistoryAccess access = new RecordingHistoryAccess();
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state, new MessageParser(), new SessionCallbackFacade(null), access, (used, max) -> { }, 0, 0);
+        orchestrator.loadFromServer().join();
+        assertEquals(0, access.cancellablePageRequests.get());
+        assertEquals(0, access.cancellableHistoryRequests.get());
+        orchestrator.loadFromServer(() -> false).join();
+        assertEquals(1, access.cancellablePageRequests.get());
+        assertEquals(1, access.cancellableHistoryRequests.get());
+    }
+
+    @Test
     public void loadFromServerClearsSessionIdWhenHistoryIsMissing() {
         SessionState state = new SessionState();
         state.setProvider("claude");
@@ -272,6 +417,36 @@ public class SessionMessageOrchestratorTest {
         assertEquals(1, state.getMessages().size());
         assertEquals("live answer", state.getMessages().get(0).content);
         assertFalse(state.isLoading());
+        assertEquals("A discarded ordinary load must not settle a pending restore",
+                0, orchestrator.getCommittedHistoryLoadCount());
+    }
+
+    @Test
+    public void committedHistoryLoadCountTracksAcceptedOrdinaryTranscripts() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("session-counted");
+        state.setCwd("/workspace");
+        RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+        historyAccess.providerHistory = List.of(
+                createProviderMessage("user", "Where did the restore stop?"),
+                createProviderMessage("assistant", "It timed out before committing."));
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state,
+                new MessageParser(),
+                new SessionCallbackFacade(null),
+                historyAccess,
+                (usedTokens, maxTokens) -> {
+                },
+                0,
+                0
+        );
+        assertEquals(0, orchestrator.getCommittedHistoryLoadCount());
+
+        orchestrator.loadFromServer().join();
+
+        assertEquals(2, state.getMessages().size());
+        assertEquals(1, orchestrator.getCommittedHistoryLoadCount());
     }
 
     @Test
@@ -1200,6 +1375,66 @@ public class SessionMessageOrchestratorTest {
         }
     }
 
+    /**
+     * A user who sends while a background follow-up is still streaming starts a
+     * turn that waits for the CLI to go quiet; the rest of the follow-up must not
+     * land below the new question, or the end-of-turn reload is refused for good.
+     */
+    @Test
+    public void interTurnRowsArrivingAfterAUserSendDoNotLandBelowIt() {
+        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        SessionState state = session.getState();
+        try {
+            state.setProvider("claude");
+            state.setSessionId("session-follow-up-send");
+            state.setCwd("/workspace");
+            MessageParser parser = new MessageParser();
+            JsonObject user = createProviderMessage("user", "Run the tests in background", "user-uuid");
+            JsonObject started = createProviderMessage("assistant", "Started in background.", "started-uuid");
+            state.addMessage(parser.parseServerMessage(user));
+            state.addMessage(parser.parseServerMessage(started));
+            JsonObject reportHead = createProviderMessage("assistant", "Background run finished: 3 failures. ", "report-head");
+            reportHead.getAsJsonObject("message").addProperty("id", "msg-follow-up");
+            JsonObject reportTail = createProviderMessage("assistant", "Failure details: foo, bar, baz.", "report-tail");
+            reportTail.getAsJsonObject("message").addProperty("id", "msg-follow-up");
+            JsonObject question = createProviderMessage("user", "What is 2+2?", "question-uuid");
+
+            assertTrue(session.appendInterTurnMessage(reportHead));
+            // SessionSendService.updateSessionStateForSend: the question is published at once.
+            state.beginTurn();
+            state.addMessage(parser.parseServerMessage(question));
+            assertFalse(session.appendInterTurnMessage(reportTail));
+            ClaudeSession.Message reply = streamAssistantText(state, "2+2 is 4.");
+            state.setBusy(false);
+            state.setLoading(false);
+
+            assertEquals(List.of("Run the tests in background", "Started in background.",
+                            "Background run finished: 3 failures. ", "What is 2+2?", "2+2 is 4."),
+                    state.getMessages().stream().map(message -> message.content).toList());
+
+            List<JsonObject> transcript = new ArrayList<>(List.of(user, started, reportHead, reportTail, question));
+            transcript.addAll(persistCliReplyBlocks(reply, "msg-reply"));
+            RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+            historyAccess.providerHistory = transcript;
+            RecordingCallback callback = new RecordingCallback();
+            SessionCallbackFacade facade = new SessionCallbackFacade(null);
+            facade.setCallback(callback);
+            SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                    state, parser, facade, historyAccess, (used, max) -> { }, 0, 0);
+
+            orchestrator.loadFromServer().join();
+
+            assertEquals(List.of("Run the tests in background", "Started in background.",
+                            "Background run finished: 3 failures. ", "Failure details: foo, bar, baz.",
+                            "What is 2+2?", "2+2 is 4."),
+                    state.getMessages().stream().map(message -> message.content).toList());
+            assertEquals(1, callback.messageUpdates.size());
+        } finally {
+            state.setBusy(false);
+            state.getExecutionState().rebind();
+        }
+    }
+
     private static List<JsonObject> persistCliReplyBlocks(ClaudeSession.Message live, String replyId) {
         List<JsonObject> rows = new ArrayList<>();
         for (JsonElement block : live.raw.getAsJsonObject("message").getAsJsonArray("content")) {
@@ -1726,6 +1961,50 @@ public class SessionMessageOrchestratorTest {
         // The result is discarded, but the spinner it started must not be left
         // behind: nothing else will clear it.
         assertFalse(state.isLoading());
+    }
+
+    @Test
+    public void cancellableHistoryLoadDoesNotCommitAfterCancellation() {
+        SessionState state = new SessionState();
+        state.setProvider("claude");
+        state.setSessionId("session-cancelled");
+        state.setCwd("/workspace");
+        state.addMessage(new ClaudeSession.Message(ClaudeSession.Message.Type.USER, "existing", new JsonObject()));
+
+        RecordingHistoryAccess historyAccess = new RecordingHistoryAccess();
+        historyAccess.providerHistory = List.of(createProviderMessage("assistant", "late result"));
+        SessionCallbackFacade callbackFacade = new SessionCallbackFacade(null);
+        AtomicInteger cancellationChecks = new AtomicInteger();
+        SessionMessageOrchestrator orchestrator = new SessionMessageOrchestrator(
+                state,
+                new MessageParser(),
+                callbackFacade,
+                historyAccess,
+                (usedTokens, maxTokens) -> {
+                },
+                0,
+                0
+        );
+
+        try {
+            orchestrator.loadFromServer(() -> cancellationChecks.incrementAndGet() > 1).join();
+        } catch (Exception expected) {
+            // The cancellable overload must complete exceptionally after cancellation.
+        }
+
+        assertTrue(cancellationChecks.get() >= 2);
+        assertEquals(1, state.getMessages().size());
+        assertEquals("existing", state.getMessages().get(0).content);
+        assertFalse(state.isLoading());
+    }
+
+    @Test
+    public void defaultCommitGateReportsMutationThatAlreadyRan() {
+        AtomicBoolean cancelled = new AtomicBoolean();
+        SessionMessageOrchestrator.HistoryLoadCancellation cancellation = cancelled::get;
+
+        assertTrue(cancellation.commitIfActive(() -> cancelled.set(true)));
+        assertTrue(cancelled.get());
     }
 
     /**
@@ -2633,6 +2912,8 @@ public class SessionMessageOrchestratorTest {
 
     private static final class RecordingHistoryAccess implements SessionMessageOrchestrator.SessionHistoryAccess {
         private final AtomicInteger providerHistoryRequests = new AtomicInteger();
+        private final AtomicInteger cancellableHistoryRequests = new AtomicInteger();
+        private final AtomicInteger cancellablePageRequests = new AtomicInteger();
         private final AtomicInteger latestClaudeUserMessageRequests = new AtomicInteger();
         private List<JsonObject> providerHistory = List.of();
         private RuntimeException providerHistoryFailure;
@@ -2650,6 +2931,20 @@ public class SessionMessageOrchestratorTest {
                 throw providerHistoryFailure;
             }
             return providerHistory;
+        }
+
+        @Override
+        public List<JsonObject> getProviderSessionMessages(
+                String provider, String sessionId, String cwd, java.util.function.BooleanSupplier cancellation) {
+            cancellableHistoryRequests.incrementAndGet();
+            return getProviderSessionMessages(provider, sessionId, cwd);
+        }
+
+        @Override
+        public JsonObject getProviderSessionMessagesPage(
+                String sessionId, String cwd, Integer beforeTurn, int limit, java.util.function.BooleanSupplier cancellation) {
+            cancellablePageRequests.incrementAndGet();
+            return getProviderSessionMessagesPage(sessionId, cwd, beforeTurn, limit);
         }
 
         @Override

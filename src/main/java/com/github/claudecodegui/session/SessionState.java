@@ -32,6 +32,9 @@ public class SessionState {
         // webview for the omp provider, but validated here so set_mode accepts them.
         modes.add("smol");
         modes.add("slow");
+        // gemini sandbox posture (`agy --sandbox`); only offered by the webview
+        // for the gemini provider, but validated here so set_mode accepts it.
+        modes.add("sandbox");
         VALID_PERMISSION_MODES = Collections.unmodifiableSet(modes);
     }
 
@@ -43,7 +46,7 @@ public class SessionState {
     }
 
     /**
-     * Canonical whitelist of valid Claude/Codex reasoning effort levels.
+     * Union of native effort levels; provider dispatch keeps Codex-only ultra out of Claude.
      */
     public static final Set<String> VALID_REASONING_EFFORTS;
     static {
@@ -53,6 +56,7 @@ public class SessionState {
         efforts.add("high");
         efforts.add("xhigh");
         efforts.add("max");
+        efforts.add("ultra");
         VALID_REASONING_EFFORTS = Collections.unmodifiableSet(efforts);
     }
 
@@ -76,6 +80,24 @@ public class SessionState {
         return normalized.isEmpty()
                 || Set.of("standard", "code", "minimal", "cordis", "router-standard").contains(normalized)
                 || discoverUserDshPresetIds().contains(normalized);
+    }
+
+    /**
+     * OMP tool-approval modes the plugin may pass as {@code omp --approval-mode}.
+     */
+    public static final Set<String> OMP_APPROVAL_MODES = Set.of("always-ask", "write", "yolo");
+
+    /**
+     * Normalize a requested OMP approval mode. Anything unrecognized becomes the
+     * empty string, which means "pass no flag": OMP's own {@code tools.approvalMode}
+     * setting decides.
+     */
+    public static String normalizeOmpApprovalMode(String mode) {
+        if (mode == null) {
+            return "";
+        }
+        String normalized = mode.trim();
+        return OMP_APPROVAL_MODES.contains(normalized) ? normalized : "";
     }
 
     public static List<String> discoverUserDshPresetIds() {
@@ -111,6 +133,8 @@ public class SessionState {
     // Claims and releases share messageStateLock with history application.
     private volatile Object loadingOwner;
     private volatile Object turnOwner = new Object();
+    private volatile SessionExecutionState executionState = new SessionExecutionState();
+
 
     // Message history is also updated by daemon reader and history-loader threads.
     // Every message callback and history replacement takes this lock so a transport
@@ -155,9 +179,13 @@ public class SessionState {
     private volatile String provider = "claude";
     // Reasoning effort (thinking depth). Null means "do not override SDK/settings".
     private volatile String reasoningEffort = null;
+    // Claude's native workflow mode is independent of reasoning effort.
+    private volatile boolean claudeUltracode = false;
     // Codex service tier: null = use Codex defaults, "fast" = Codex /fast.
     private volatile String codexServiceTier = null;
     private volatile String dshPreset = "";
+    // OMP --approval-mode override; "" = follow OMP's own tools.approvalMode.
+    private volatile String ompApprovalMode = "";
 
     // Slash commands — volatile for cross-thread visibility (same reason as permissionMode/model/provider)
     private volatile List<String> slashCommands = new ArrayList<>();
@@ -166,6 +194,41 @@ public class SessionState {
     private boolean psiContextEnabled = true;
 
     // Getters
+    private final java.util.Map<String, String> supplierIds = new java.util.HashMap<>();
+    private String turnSupplierId;
+    private String turnSupplierProvider;
+
+    public String getSupplierId(String engine) {
+        synchronized (messageStateLock) {
+            return supplierIds.get(engine);
+        }
+    }
+
+    public void setSupplierId(String engine, String supplierId) {
+        synchronized (messageStateLock) {
+            if (supplierId == null || supplierId.isBlank()) {
+                supplierIds.remove(engine);
+            } else {
+                supplierIds.put(engine, supplierId);
+            }
+        }
+    }
+
+    /** Freeze routing before launch; changing the selection cannot redirect active controls. */
+    public void captureTurnSupplier() {
+        synchronized (messageStateLock) {
+            turnSupplierProvider = provider;
+            turnSupplierId = supplierIds.get(provider);
+        }
+    }
+
+    public String getRuntimeSupplierId(String engine) {
+        synchronized (messageStateLock) {
+            return (busy || executionState.hasLiveTurn()) && java.util.Objects.equals(engine, turnSupplierProvider)
+                    ? turnSupplierId : supplierIds.get(engine);
+        }
+    }
+
     public String getSessionId() {
         return sessionId;
     }
@@ -181,11 +244,17 @@ public class SessionState {
     /** Starts a send before any previous provider process has finished shutting down. */
     public Object beginTurn() {
         synchronized (messageStateLock) {
+            captureTurnSupplier();
+            // Preserve an unfinished predecessor as a detached source, without changing cancellation policy.
+            if (executionState.hasLiveTurn()) {
+                rebindExecution();
+            }
             turnOwner = new Object();
             busy = true;
             loading = true;
             loadingOwner = null;
             error = null;
+            executionState.beginTurn();
             return turnOwner;
         }
     }
@@ -196,6 +265,33 @@ public class SessionState {
 
     public boolean isCurrentTurn(Object owner) {
         return turnOwner == owner;
+    }
+
+    public SessionExecutionState getExecutionState() {
+        return executionState;
+    }
+
+    public SessionExecutionState.Snapshot getExecutionSnapshot() {
+        return executionState.snapshot();
+    }
+
+    public SessionExecutionState.Turn executionTurnForOwner(Object owner) {
+        synchronized (messageStateLock) {
+            return isCurrentTurn(owner) ? executionState.currentTurn() : null;
+        }
+    }
+
+    public SessionExecutionOwnership executionOwnershipForOwner(Object owner) {
+        synchronized (messageStateLock) {
+            SessionExecutionState.Turn turn = executionTurnForOwner(owner);
+            return turn == null ? null : new SessionExecutionOwnership(executionState, turn);
+        }
+    }
+
+    public SessionExecutionOwnership currentExecutionOwnership() {
+        synchronized (messageStateLock) {
+            return executionOwnershipForOwner(turnOwner);
+        }
     }
 
     public boolean isLoading() {
@@ -284,12 +380,24 @@ public class SessionState {
         return reasoningEffort;
     }
 
+    public boolean isClaudeUltracode() {
+        return claudeUltracode;
+    }
+
+    public void setClaudeUltracode(boolean enabled) {
+        this.claudeUltracode = enabled;
+    }
+
     public String getCodexServiceTier() {
         return codexServiceTier;
     }
 
     public String getDshPreset() {
         return dshPreset;
+    }
+
+    public String getOmpApprovalMode() {
+        return ompApprovalMode;
     }
 
     public String getRuntimeSessionEpoch() {
@@ -308,7 +416,26 @@ public class SessionState {
 
     // Setters
     public void setSessionId(String sessionId) {
-        this.sessionId = sessionId;
+        synchronized (messageStateLock) {
+            if (!java.util.Objects.equals(this.sessionId, sessionId)) {
+                // Native recovery may replace a provider ID mid-turn without replacing its actor.
+                // Initial identity discovery also preserves an already completed turn's terminal event.
+                if (!executionState.hasLiveTurn() && (this.sessionId != null || executionState.currentTurn() == null)) {
+                    rebindExecution();
+                }
+                this.sessionId = sessionId;
+            }
+        }
+    }
+
+    /** History selection is a binding change even before the first provider-assigned ID arrives. */
+    public void setRestoredSessionId(String sessionId) {
+        synchronized (messageStateLock) {
+            if (!java.util.Objects.equals(this.sessionId, sessionId)) {
+                rebindExecution();
+                this.sessionId = sessionId;
+            }
+        }
     }
 
     public void setChannelId(String channelId) {
@@ -391,6 +518,11 @@ public class SessionState {
         this.cwd = cwd;
     }
 
+    /**
+     * Updates the active permission mode after normalizing provider-specific and legacy aliases.
+     *
+     * @param permissionMode Permission mode identifier, or null to clear
+     */
     public void setPermissionMode(String permissionMode) {
         if (permissionMode == null) {
             this.permissionMode = null;
@@ -399,6 +531,9 @@ public class SessionState {
         String normalizedMode = permissionMode.trim();
         if ("autoEdit".equals(normalizedMode)) {
             normalizedMode = "acceptEdits";
+        }
+        if ("sandbox".equals(normalizedMode) && !"gemini".equals(this.provider)) {
+            normalizedMode = "default";
         }
         if (!VALID_PERMISSION_MODES.contains(normalizedMode)) {
             // Reject unrecognized modes silently to prevent injection of arbitrary strings
@@ -472,8 +607,21 @@ public class SessionState {
         return oneM ? base + "[1m]" : base;
     }
 
+    /**
+     * Updates the active provider, rebinding execution state and normalizing incompatible permission modes.
+     *
+     * @param provider Provider identifier
+     */
     public void setProvider(String provider) {
-        this.provider = provider;
+        synchronized (messageStateLock) {
+            if (!java.util.Objects.equals(this.provider, provider)) {
+                rebindExecution();
+                this.provider = provider;
+                if (!"gemini".equals(provider) && "sandbox".equals(this.permissionMode)) {
+                    this.permissionMode = "default";
+                }
+            }
+        }
     }
 
     public void setReasoningEffort(String reasoningEffort) {
@@ -498,18 +646,38 @@ public class SessionState {
         }
     }
 
+    public void setOmpApprovalMode(String mode) {
+        this.ompApprovalMode = normalizeOmpApprovalMode(mode);
+    }
+
     public void setRuntimeSessionEpoch(String runtimeSessionEpoch) {
-        if (runtimeSessionEpoch == null || runtimeSessionEpoch.trim().isEmpty()) {
-            this.runtimeSessionEpoch = UUID.randomUUID().toString();
-            return;
+        synchronized (messageStateLock) {
+            String epoch = runtimeSessionEpoch == null || runtimeSessionEpoch.trim().isEmpty()
+                    ? UUID.randomUUID().toString() : runtimeSessionEpoch;
+            if (!this.runtimeSessionEpoch.equals(epoch)) {
+                rebindExecution();
+                this.runtimeSessionEpoch = epoch;
+            }
         }
-        this.runtimeSessionEpoch = runtimeSessionEpoch;
     }
 
     public String rotateRuntimeSessionEpoch() {
         String newEpoch = UUID.randomUUID().toString();
-        this.runtimeSessionEpoch = newEpoch;
+        setRuntimeSessionEpoch(newEpoch);
         return newEpoch;
+    }
+
+    /**
+     * Retires the binding (new execution state and turn owner) and releases busy, plus loading unless
+     * history owns it. It never notifies the webview; callers that keep the page must do so.
+     */
+    private void rebindExecution() {
+        executionState = new SessionExecutionState();
+        turnOwner = new Object();
+        busy = false;
+        if (loadingOwner == null) {
+            loading = false;
+        }
     }
 
     public void setSlashCommands(List<String> slashCommands) {

@@ -1,5 +1,7 @@
 package com.github.claudecodegui.session;
 
+import com.github.claudecodegui.util.PluginIdeContext;
+import com.github.claudecodegui.util.UserMessageSanitizer;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -54,18 +56,19 @@ public class MessageParser {
         }
 
         if ("user".equals(type)) {
-            String content = extractMessageContent(msg);
+            String content = UserMessageSanitizer.sanitizeClaudeUserFacingText(extractMessageContent(msg));
+            JsonObject sanitizedRaw = sanitizeUserRawMessage(PluginIdeContext.visibleMessage(rawMessage));
             // Check if it contains a tool_result
             if (content == null || content.trim().isEmpty()) {
-                if (hasToolResult(rawMessage)) {
-                    return new ClaudeSession.Message(ClaudeSession.Message.Type.USER, "[tool_result]", rawMessage);
+                if (hasToolResult(sanitizedRaw)) {
+                    return new ClaudeSession.Message(ClaudeSession.Message.Type.USER, "[tool_result]", sanitizedRaw);
                 }
-                if (hasImageContent(rawMessage)) {
-                    return new ClaudeSession.Message(ClaudeSession.Message.Type.USER, "", rawMessage);
+                if (hasImageContent(sanitizedRaw)) {
+                    return new ClaudeSession.Message(ClaudeSession.Message.Type.USER, "", sanitizedRaw);
                 }
                 return null;
             }
-            return new ClaudeSession.Message(ClaudeSession.Message.Type.USER, content, rawMessage);
+            return new ClaudeSession.Message(ClaudeSession.Message.Type.USER, content, sanitizedRaw);
         } else if ("assistant".equals(type)) {
             String content = extractMessageContent(msg);
             return new ClaudeSession.Message(ClaudeSession.Message.Type.ASSISTANT, content, rawMessage);
@@ -88,6 +91,78 @@ public class MessageParser {
     }
 
     /**
+     * Sanitize user-facing text blocks inside the raw message payload so
+     * frontend renderers (which inspect {@code raw.message.content}) do not
+     * display appended legacy IDE/Grok rules context. Literal user XML is kept.
+     */
+    private static JsonObject sanitizeUserRawMessage(JsonObject rawMessage) {
+        if (rawMessage == null) {
+            return null;
+        }
+        JsonObject target = rawMessage.has("message") && rawMessage.get("message").isJsonObject()
+                ? rawMessage.getAsJsonObject("message")
+                : rawMessage;
+        if (!target.has("content") || target.get("content").isJsonNull()) {
+            return rawMessage;
+        }
+        JsonElement contentEl = target.get("content");
+        if (contentEl.isJsonPrimitive() && contentEl.getAsJsonPrimitive().isString()) {
+            String original = contentEl.getAsString();
+            String sanitized = UserMessageSanitizer.sanitizeClaudeUserFacingText(original);
+            if (sanitized != null && !sanitized.equals(original)) {
+                JsonObject copy = rawMessage.deepCopy();
+                JsonObject copyTarget = copy.has("message") && copy.get("message").isJsonObject()
+                        ? copy.getAsJsonObject("message")
+                        : copy;
+                copyTarget.addProperty("content", sanitized);
+                return copy;
+            }
+            return rawMessage;
+        }
+        if (contentEl.isJsonArray()) {
+            JsonArray arr = contentEl.getAsJsonArray();
+            boolean changed = false;
+            for (int i = 0; i < arr.size(); i++) {
+                JsonElement el = arr.get(i);
+                if (el.isJsonObject()) {
+                    JsonObject block = el.getAsJsonObject();
+                    if (block.has("type") && "text".equals(block.get("type").getAsString())
+                            && block.has("text") && !block.get("text").isJsonNull()) {
+                        String orig = block.get("text").getAsString();
+                        String san = UserMessageSanitizer.sanitizeClaudeUserFacingText(orig);
+                        if (san != null && !san.equals(orig)) {
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!changed) {
+                return rawMessage;
+            }
+            JsonObject copy = rawMessage.deepCopy();
+            JsonObject copyTarget = copy.has("message") && copy.get("message").isJsonObject()
+                    ? copy.getAsJsonObject("message")
+                    : copy;
+            JsonArray copyArr = copyTarget.getAsJsonArray("content");
+            for (int i = 0; i < copyArr.size(); i++) {
+                JsonElement el = copyArr.get(i);
+                if (el.isJsonObject()) {
+                    JsonObject block = el.getAsJsonObject();
+                    if (block.has("type") && "text".equals(block.get("type").getAsString())
+                            && block.has("text") && !block.get("text").isJsonNull()) {
+                        String orig = block.get("text").getAsString();
+                        String san = UserMessageSanitizer.sanitizeClaudeUserFacingText(orig);
+                        block.addProperty("text", san != null ? san : "");
+                    }
+                }
+            }
+            return copy;
+        }
+        return rawMessage;
+    }
+
+    /**
      * Check whether a command message should be filtered out.
      * Only applies to user messages - assistant messages may contain
      * command tags in code examples and should not be filtered.
@@ -98,6 +173,9 @@ public class MessageParser {
             return false;
         }
 
+        // Editor selections may quote command tags. Only the final user input
+        // after removing plugin context can identify native bookkeeping rows.
+        msg = PluginIdeContext.visibleMessage(msg);
         if (!msg.has("message") || !msg.get("message").isJsonObject()) {
             return false;
         }
@@ -114,7 +192,7 @@ public class MessageParser {
             contentStr = contentElement.getAsString();
         } else if (contentElement.isJsonArray()) {
             JsonArray contentArray = contentElement.getAsJsonArray();
-            for (int i = 0; i < contentArray.size(); i++) {
+            for (int i = contentArray.size() - 1; i >= 0; i--) {
                 JsonElement element = contentArray.get(i);
                 if (element.isJsonObject()) {
                     JsonObject block = element.getAsJsonObject();
@@ -217,6 +295,9 @@ public class MessageParser {
      * Extract the message content.
      */
     public String extractMessageContent(JsonObject msg) {
+        if (msg.has("type") && "user".equals(msg.get("type").getAsString())) {
+            msg = PluginIdeContext.visibleMessage(msg);
+        }
         if (!msg.has("message")) {
             if (msg.has("content")) {
                 return extractContentFromElement(msg.get("content"));

@@ -5,14 +5,27 @@
  */
 
 import { appendFile, mkdir, access, open as fsOpen, stat as fsStat, readFile } from 'fs/promises';
+import { existsSync } from 'fs';
+import { createRequire } from 'node:module';
 import { join } from 'path';
 import { setupApiKey, loadClaudeSettings, getCliUserAgent } from '../config/api-config.js';
+import { buildSessionClaudeConfig } from '../config/session-supplier.js';
 import { ensureAnthropicSdk, ensureBedrockSdk } from './claude/message-utils.js';
+import { extractTextContent, isInterruptionMarker, forEachJsonlLineSync } from './claude/session-service.js';
 import { resolveModelFromSettings } from '../utils/model-utils.js';
+import { buildAskThinkingFields, createWithThinkingFallback } from '../utils/ask-thinking.js';
 import { getExistingClaudeProjectSessionFilePath, getCodemossDir } from '../utils/path-utils.js';
 
 const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_CONVERSATION_TEXT = 1000;
+
+// The manual-title store lives in a CJS module shared with the Java-side
+// service calls; load it through createRequire (same pattern as
+// gemini/message-service.js), lazily so importing this ESM module stays cheap.
+const require = createRequire(import.meta.url);
+function loadSessionTitlesService() {
+  return require('./session-titles-service.cjs');
+}
 // Aligns with Java HistoryDeleteService.SESSION_ID_PATTERN — alphanumeric,
 // dot, dash, underscore. Defeats path-traversal payloads in upstream payloads.
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
@@ -45,13 +58,12 @@ Bad: {"title": "修复登录按钮在移动设备上不响应的问题"} (too lo
 // DaemonBridge.java handles "title_log" events with appropriate log levels.
 
 function logTitleEvent(level, message) {
-  const line = JSON.stringify({
+  writeDaemonEventLine({
     type: 'daemon',
     event: 'title_log',
     level,
     message
-  }) + '\n';
-  process.stdout.write(line);
+  });
 }
 
 /**
@@ -59,13 +71,26 @@ function logTitleEvent(level, message) {
  * AI title to the frontend for immediate display in the chat header.
  */
 function emitTitleGenerated(sessionId, title) {
-  const line = JSON.stringify({
+  writeDaemonEventLine({
     type: 'daemon',
     event: 'title_generated',
     sessionId,
     title
-  }) + '\n';
-  process.stdout.write(line);
+  });
+}
+
+/**
+ * Write a daemon event line through the out-of-band stdout writer when the
+ * daemon exposes one. daemon.js replaces process.stdout.write so plain string
+ * output is tagged with the active request id; a title event emitted while an
+ * unrelated request is active (e.g. an on-demand regeneration running beside a
+ * streaming turn) would then be misrouted into that request's line stream and
+ * never reach DaemonBridge's event dispatch. _originalStdoutWrite bypasses the
+ * tagging; the raw-write fallback keeps one-shot CLI/test invocations working.
+ */
+function writeDaemonEventLine(event) {
+  const write = process.stdout._originalStdoutWrite ?? process.stdout.write.bind(process.stdout);
+  write(JSON.stringify(event) + '\n', 'utf8');
 }
 
 /**
@@ -144,8 +169,8 @@ function getSessionFilePath(sessionId, cwd) {
  * checking ANTHROPIC_DEFAULT_HAIKU_MODEL before falling back to the default.
  * @returns {string} Model ID
  */
-function resolveHaikuModel() {
-  const settings = loadClaudeSettings();
+function resolveHaikuModel(supplier = null) {
+  const settings = supplier?.settings ?? loadClaudeSettings();
   return resolveModelFromSettings(DEFAULT_HAIKU_MODEL, settings?.env) || DEFAULT_HAIKU_MODEL;
 }
 
@@ -155,7 +180,7 @@ function resolveHaikuModel() {
  * @param {string} [sessionId] - Session id, forwarded as the upstream session header
  * @returns {Promise<object>} Anthropic client instance
  */
-async function createAnthropicClient(config, sessionId) {
+async function createAnthropicClient(config, sessionId, { anthropicSdk = ensureAnthropicSdk, bedrockSdk = ensureBedrockSdk } = {}) {
   const cliHeaders = {
     'x-app': 'cli',
     'User-Agent': getCliUserAgent()
@@ -170,12 +195,12 @@ async function createAnthropicClient(config, sessionId) {
   }
 
   if (config.authType === 'aws_bedrock') {
-    const bedrockModule = await ensureBedrockSdk();
+    const bedrockModule = await bedrockSdk();
     const AnthropicBedrock = bedrockModule.AnthropicBedrock || bedrockModule.default || bedrockModule;
-    return new AnthropicBedrock({ defaultHeaders: cliHeaders });
+    return new AnthropicBedrock({ ...config.bedrockOptions, defaultHeaders: cliHeaders });
   }
 
-  const anthropicModule = await ensureAnthropicSdk();
+  const anthropicModule = await anthropicSdk();
   const Anthropic = anthropicModule.default || anthropicModule.Anthropic || anthropicModule;
 
   if (config.authType === 'auth_token') {
@@ -196,17 +221,18 @@ async function createAnthropicClient(config, sessionId) {
 
 /**
  * Build the messages.create() request for title generation.
- * thinking is disabled: the Haiku alias can be user-mapped to a reasoning
- * model (e.g. DeepSeek via relay), which would otherwise spend the budget on
- * `thinking` blocks and return an empty title. The budget keeps headroom for
- * relays that ignore the flag (observed: thinking block, stop_reason max_tokens).
+ * Thinking is turned off where the model allows it: the Haiku alias can be
+ * user-mapped to a reasoning model (e.g. DeepSeek via relay), which would
+ * otherwise spend the budget on `thinking` blocks and return an empty title
+ * (#1693). Models that reject `disabled` get the form they accept (#1949), see
+ * ask-thinking.js. The budget keeps headroom for relays that ignore the flag
+ * (observed: thinking block, stop_reason max_tokens).
  * Exposed for tests.
  */
 export function buildSessionTitleRequest(model, userMessage) {
   return {
     model,
-    max_tokens: 2048,
-    thinking: { type: 'disabled' },
+    ...buildAskThinkingFields(model, 2048),
     messages: [{ role: 'user', content: userMessage }],
     system: SESSION_TITLE_PROMPT,
   };
@@ -218,8 +244,36 @@ export function buildSessionTitleRequest(model, userMessage) {
  * @param {string} sessionId - Session id, forwarded as the upstream session header
  * @returns {Promise<string|null>} Generated title or null
  */
-async function callHaikuApi(userMessage, sessionId) {
-  const config = setupApiKey();
+function resolveTitleApiConfig(supplier) {
+  if (!supplier) return setupApiKey();
+  const env = supplier.env;
+  if (['1', 'true'].includes(String(env.CLAUDE_CODE_USE_BEDROCK).toLowerCase())) {
+    // A direct title client must never resolve another profile's default credential chain.
+    if (!env.AWS_BEARER_TOKEN_BEDROCK && !(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY)) {
+      return { authType: 'bound_cloud_credential_chain' };
+    }
+    const awsRegion = env.AWS_REGION || env.AWS_DEFAULT_REGION || 'us-east-1';
+    return { authType: 'aws_bedrock', bedrockOptions: {
+      apiKey: env.AWS_BEARER_TOKEN_BEDROCK || null,
+      awsAccessKey: env.AWS_ACCESS_KEY_ID || null,
+      awsSecretKey: env.AWS_SECRET_ACCESS_KEY || null,
+      awsSessionToken: env.AWS_SESSION_TOKEN || null,
+      awsRegion,
+      baseURL: env.ANTHROPIC_BEDROCK_BASE_URL || `https://bedrock-runtime.${awsRegion}.amazonaws.com`,
+    } };
+  }
+  if (['VERTEX', 'FOUNDRY'].some(name => ['1', 'true'].includes(String(env[`CLAUDE_CODE_USE_${name}`]).toLowerCase()))) {
+    return { authType: 'bound_cloud_credential_chain' };
+  }
+  return {
+    apiKey: supplier.env.ANTHROPIC_AUTH_TOKEN || supplier.env.ANTHROPIC_API_KEY,
+    baseUrl: supplier.env.ANTHROPIC_BASE_URL || supplier.env.ANTHROPIC_API_URL || 'https://api.anthropic.com',
+    authType: supplier.env.ANTHROPIC_AUTH_TOKEN ? 'auth_token' : 'api_key',
+  };
+}
+
+async function callHaikuApi(userMessage, sessionId, supplier = null, dependencies = {}) {
+  const config = resolveTitleApiConfig(supplier);
 
   // CLI login uses SDK-native OAuth which the direct Anthropic SDK doesn't support.
   if (config.authType === 'cli_login') {
@@ -227,13 +281,13 @@ async function callHaikuApi(userMessage, sessionId) {
     return null;
   }
 
-  if (!config.apiKey && config.authType !== 'api_key_helper') {
+  if (!config.apiKey && !['api_key_helper', 'aws_bedrock'].includes(config.authType)) {
     logTitleEvent('info', 'Skipping title generation: no API key available (authType: ' + config.authType + ')');
     return null;
   }
 
-  const client = await createAnthropicClient(config, sessionId);
-  const model = resolveHaikuModel();
+  const client = await createAnthropicClient(config, sessionId, dependencies);
+  const model = resolveHaikuModel(supplier);
   logTitleEvent('info', 'Calling Haiku API, model: ' + model);
 
   const controller = new AbortController();
@@ -241,9 +295,12 @@ async function callHaikuApi(userMessage, sessionId) {
 
   let response;
   try {
-    response = await client.messages.create(
+    response = await createWithThinkingFallback(
+      (request) => client.messages.create(request, { signal: controller.signal }),
       buildSessionTitleRequest(model, userMessage),
-      { signal: controller.signal }
+      {
+        onRetry: (err) => logTitleEvent('warn', 'Model rejected the thinking setting, retrying without it: ' + String(err.message).slice(0, 200)),
+      }
     );
   } catch (err) {
     if (controller.signal.aborted) {
@@ -290,6 +347,8 @@ async function callHaikuApi(userMessage, sessionId) {
   }
 }
 
+export const __testing = { callHaikuApi };
+
 /**
  * Save AI title to the JSONL session file.
  * @param {string} sessionId
@@ -330,7 +389,7 @@ async function saveAiTitle(sessionId, title, cwd) {
  * @param {string} sessionId - Session ID
  * @param {string|null} cwd - Working directory
  */
-export async function generateSessionTitle(userMessage, sessionId, cwd) {
+export async function generateSessionTitle(userMessage, sessionId, cwd, supplier = null) {
   if (!userMessage || !userMessage.trim() || !sessionId) {
     logTitleEvent('info', 'Skipping title generation: missing userMessage or sessionId');
     // Treat invalid input as "do not retry" — return true so callers don't
@@ -363,17 +422,9 @@ export async function generateSessionTitle(userMessage, sessionId, cwd) {
   }
 
   try {
-    // Iterate by Unicode code point so we never split a surrogate pair
-    // (e.g. CJK extension characters or emoji) when truncating.
-    let input = userMessage;
-    if (userMessage.length > MAX_CONVERSATION_TEXT) {
-      const codePoints = Array.from(userMessage);
-      if (codePoints.length > MAX_CONVERSATION_TEXT) {
-        input = codePoints.slice(-MAX_CONVERSATION_TEXT).join('');
-      }
-    }
+    const input = truncateByCodePoints(userMessage, MAX_CONVERSATION_TEXT);
 
-    const title = await callHaikuApi(input, sessionId);
+    const title = await callHaikuApi(input, sessionId, supplier);
     if (title) {
       // saveAiTitle returning false signals an FS error; don't retry — disk
       // problems are usually persistent and a retry storm helps no one.
@@ -390,5 +441,266 @@ export async function generateSessionTitle(userMessage, sessionId, cwd) {
     // transient — return false so callers may reset their guard and retry.
     logTitleEvent('error', 'Title generation failed: ' + e.message);
     return false;
+  }
+}
+
+// --- On-demand regeneration (history-list refresh button) ---
+
+// Keep the tail of the text so recent context shapes the regenerated title.
+function truncateByCodePoints(text, maxCodePoints) {
+  if (text.length <= maxCodePoints) {
+    return text;
+  }
+  // Iterate by Unicode code point so we never split a surrogate pair
+  // (e.g. CJK extension characters or emoji) when truncating.
+  const codePoints = Array.from(text);
+  return codePoints.length > maxCodePoints
+    ? codePoints.slice(-maxCodePoints).join('')
+    : text;
+}
+
+/**
+ * Head-keeping counterpart of truncateByCodePoints for the regeneration
+ * input. A user prompt typically opens with the actual request and ends with
+ * a paste (stack trace, log, file dump); tail-truncating dropped the request
+ * and fed the model only the paste's tail.
+ */
+function truncateHeadByCodePoints(text, maxCodePoints) {
+  if (text.length <= maxCodePoints) {
+    return text;
+  }
+  const codePoints = Array.from(text);
+  return codePoints.length > maxCodePoints
+    ? codePoints.slice(0, maxCodePoints).join('')
+    : text;
+}
+
+/**
+ * Number of recent prompts (beyond the first one) that feed a regeneration.
+ * The first prompt anchors the session's topic; recent prompts let the title
+ * track where the conversation ended up.
+ */
+const REGENERATE_RECENT_PROMPTS = 4;
+
+// Per-prompt truncation budgets (code points) for the regeneration input.
+// They sum to MAX_CONVERSATION_TEXT (400 + 4 × 150) and are applied per prompt
+// BEFORE joining: tail-truncating the joined text instead (old behaviour) kept
+// only the last 1000 code points, so one long recent prompt (a pasted stack
+// trace is enough) evicted the anchoring first prompt entirely.
+const FIRST_PROMPT_CODE_POINT_BUDGET = 400;
+const RECENT_PROMPT_CODE_POINT_BUDGET = 150;
+
+// The plugin's per-turn IDE context block (persistent-query-service.js), leading
+// since #2092 and trailing before it. Mirrors Java PluginIdeContext.
+const IDE_CONTEXT_PREFIX = '<system-reminder>\nThe following IDE context applies to the user message below.\n';
+const LEGACY_IDE_CONTEXT_PREFIX = '<system-reminder>\nThe following IDE context applies only to this user message.\n';
+const IDE_CONTEXT_SUFFIX = '\n</system-reminder>';
+
+/**
+ * Drop the plugin's IDE context block from a user row, as Java
+ * PluginIdeContext.visibleContent does for history. Left in, the leading block
+ * made every prompt look like '<' plumbing (empty_session whenever a file was
+ * open) and the legacy trailing block fed file paths and selected code to the
+ * title model.
+ */
+function withoutPluginIdeContext(row) {
+  const content = row.message?.content;
+  if (!Array.isArray(content) || content.length < 2) return row;
+  const isContext = (block, prefix) => block?.type === 'text' && typeof block.text === 'string'
+    && block.text.startsWith(prefix) && block.text.endsWith(IDE_CONTEXT_SUFFIX);
+  const index = isContext(content[0], IDE_CONTEXT_PREFIX) ? 0
+    : isContext(content.at(-1), LEGACY_IDE_CONTEXT_PREFIX) ? content.length - 1 : -1;
+  if (index < 0) return row;
+  return { ...row, message: { ...row.message, content: content.filter((_, i) => i !== index) } };
+}
+
+/**
+ * Extract the user prompt a row contributes to a session's topic, mirroring
+ * the CLI's firstPrompt scan. Returns null for anything that is not real user
+ * input: meta rows, interruption markers, tool-result carriers (no text
+ * blocks), XML-wrapped CLI plumbing (<command-name> etc.), compaction
+ * summaries (/compact writes its summary as a type:"user" row with
+ * isCompactSummary — up to tens of thousands of CLI-generated characters that
+ * would drown out what the user actually wrote), transcript-only rows and
+ * sidechain rows.
+ */
+function userPromptFromRow(row) {
+  if (!row || typeof row !== 'object' || row.type !== 'user') return null;
+  if (row.isMeta === true) return null;
+  if (row.isCompactSummary === true || row.isVisibleInTranscriptOnly === true || row.isSidechain === true) return null;
+  if (isInterruptionMarker(row)) return null;
+  const text = extractTextContent(withoutPluginIdeContext(row)).trim();
+  if (!text || text.startsWith('<')) return null;
+  return text;
+}
+
+/**
+ * Collect the user prompts that define a session's topic.
+ * Exposed for tests.
+ */
+export function collectSessionUserPrompts(rows) {
+  const prompts = [];
+  for (const row of rows) {
+    const prompt = userPromptFromRow(row);
+    if (prompt !== null) prompts.push(prompt);
+  }
+  return prompts;
+}
+
+/**
+ * Collect the prompts a regeneration needs by streaming the session JSONL
+ * line by line: never materializing the whole file (long sessions grow past
+ * V8's maximum string length, which is why session-service.js reads this way
+ * too) and keeping only what the input builder consumes — the first prompt
+ * plus a rolling window of the last `recentLimit` ones.
+ */
+function collectRegenerationPrompts(sessionFile, recentLimit = REGENERATE_RECENT_PROMPTS) {
+  let first = null;
+  const recent = [];
+  forEachJsonlLineSync(sessionFile, (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let row;
+    try {
+      row = JSON.parse(trimmed);
+    } catch {
+      return; // Skip blank and malformed lines.
+    }
+    const prompt = userPromptFromRow(row);
+    if (prompt === null) return;
+    if (first === null) {
+      first = prompt;
+      return;
+    }
+    recent.push(prompt);
+    if (recent.length > recentLimit) recent.shift();
+  });
+  return first === null ? [] : [first, ...recent];
+}
+
+/**
+ * Build the title-generation input from a session's user prompts: the first
+ * prompt plus the most recent ones, each truncated to its own budget so every
+ * selected prompt is guaranteed room within the overall ceiling. Returns null
+ * when there is no prompt at all (nothing to derive a title from).
+ * Exposed for tests.
+ */
+export function buildRegenerationInput(prompts) {
+  if (prompts.length === 0) {
+    return null;
+  }
+  const selected = prompts.length <= 1 + REGENERATE_RECENT_PROMPTS
+    ? prompts
+    : [prompts[0], ...prompts.slice(-REGENERATE_RECENT_PROMPTS)];
+  // Head-keeping truncation: prompts open with the request and end with a
+  // paste, so the head carries what the user actually asked for.
+  return selected
+    .map((prompt, index) => truncateHeadByCodePoints(
+      prompt,
+      index === 0 ? FIRST_PROMPT_CODE_POINT_BUDGET : RECENT_PROMPT_CODE_POINT_BUDGET,
+    ))
+    .join('\n\n');
+}
+
+/**
+ * Regenerate a session's AI title from its recorded conversation content.
+ * Unlike the fire-and-forget generateSessionTitle (first turn only, guarded
+ * by hasExistingAiTitle), this is an on-demand user action and intentionally
+ * appends a fresh ai-title row — the CLI resolves title rows last-write-wins,
+ * so the new row overrides the old one everywhere titles are read.
+ *
+ * Reuses the same pipeline as auto-generation: SESSION_TITLE_PROMPT, the
+ * resolved Haiku model, JSON parsing, and saveAiTitle persistence.
+ *
+ * The optional dependencies parameter exists for tests only (same style as
+ * settleCodexSessionTitle); production callers omit it.
+ *
+ * @param {string} sessionId - Session ID
+ * @param {string|null} cwd - Working directory used to locate the session file
+ * @param {string|null} [supplierId] - Supplier the conversation is bound to, or
+ *   null for the global profile
+ * @param {object} [dependencies] - Test seams; each defaults to the real path
+ * @returns {Promise<{success: boolean, title?: string, code?: string, error?: string}>}
+ *   code is a stable machine-readable failure reason (custom_title,
+ *   session_not_found, empty_session, disabled, supplier_unavailable,
+ *   generation_failed, persist_failed) the frontend maps to a friendly toast.
+ */
+export async function regenerateSessionTitle(sessionId, cwd, supplierId = null, dependencies = {}) {
+  const {
+    isEnabled = isTitleGenerationEnabled,
+    resolveSessionFile = () => getSessionFilePath(sessionId, cwd),
+    readPrompts = (sessionFile) => collectRegenerationPrompts(sessionFile),
+    resolveSupplier = (id) => buildSessionClaudeConfig(id),
+    generateTitle = (input, supplier) => callHaikuApi(input, sessionId, supplier),
+    saveTitle = (title) => saveAiTitle(sessionId, title, cwd),
+    hasCustomTitle = () => loadSessionTitlesService().getTitle(sessionId) != null,
+  } = dependencies;
+
+  if (!sessionId || !isValidSessionId(sessionId)) {
+    return { success: false, code: 'invalid_session' };
+  }
+
+  // The backend is the source of truth for manual titles: the webview hides
+  // the refresh button from its history snapshot, but that snapshot may be
+  // stale or missing the session (e.g. renamed from the chat header before
+  // the history view ever loaded). A manual title wins over any AI title
+  // (customTitle > aiTitle), so regenerating would burn a Haiku call only to
+  // report a success the next history load overrides — fail honestly instead.
+  if (hasCustomTitle()) {
+    logTitleEvent('info', 'Regenerate skipped: session has a manual title: ' + sessionId);
+    return { success: false, code: 'custom_title' };
+  }
+
+  const sessionFile = resolveSessionFile();
+  if (!existsSync(sessionFile)) {
+    logTitleEvent('warn', 'Regenerate skipped: session file not found for ' + sessionId);
+    return { success: false, code: 'session_not_found' };
+  }
+
+  if (!(await isEnabled())) {
+    logTitleEvent('info', 'Regenerate skipped: disabled in user settings');
+    return { success: false, code: 'disabled' };
+  }
+
+  // Title the conversation through the supplier it is bound to, as the first-turn
+  // title does. The global profile can be another account or CLI login, which
+  // would send this conversation's prompts elsewhere or always fail.
+  let supplier;
+  try {
+    supplier = resolveSupplier(supplierId);
+  } catch (e) {
+    logTitleEvent('warn', 'Regenerate skipped: ' + e.message);
+    return { success: false, code: 'supplier_unavailable', error: e.message };
+  }
+
+  let input;
+  try {
+    input = buildRegenerationInput(readPrompts(sessionFile));
+  } catch (e) {
+    logTitleEvent('warn', 'Regenerate failed to read session prompts: ' + e.message);
+    return { success: false, code: 'unreadable_session' };
+  }
+  if (!input) {
+    logTitleEvent('info', 'Regenerate skipped: session has no user prompts');
+    return { success: false, code: 'empty_session' };
+  }
+
+  try {
+    // The input is already bounded by the per-prompt budgets in
+    // buildRegenerationInput (they sum to MAX_CONVERSATION_TEXT).
+    const title = await generateTitle(input, supplier);
+    if (!title) {
+      // callHaikuApi returns null for permanent skips (cli_login, missing key,
+      // unparseable response) — nothing transient to retry at this layer.
+      return { success: false, code: 'generation_failed' };
+    }
+    const saved = await saveTitle(title);
+    if (!saved) {
+      return { success: false, code: 'persist_failed' };
+    }
+    return { success: true, title };
+  } catch (e) {
+    logTitleEvent('error', 'Regenerate failed: ' + e.message);
+    return { success: false, code: 'generation_failed' };
   }
 }

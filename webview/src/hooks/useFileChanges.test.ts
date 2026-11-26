@@ -5,6 +5,7 @@ import {
   useFileChanges,
   computeDiffStats,
   clearDiffCache,
+  editOperationKey,
 } from './useFileChanges';
 import { clearFileTouchRegistry, recordFileTouches } from '../utils/fileTouchRegistry';
 import * as fileLedger from '../utils/sessionFileLedger';
@@ -16,16 +17,36 @@ describe('file ledger work budget', () => {
   const writes = vi.fn((key: string, value: string) => { store.set(key, value); });
   const edit = (id = 'edit', path = '/budget.ts', old = 'before', next = 'after') =>
     assistantWithTools([{ id, name: 'Edit', input: { file_path: path, old_string: old, new_string: next } }]);
-  const snapshot = (messages: ClaudeMessage[], session = 'session-a', startFromIndex = 0) => ({
-    messages, currentSessionId: session, startFromIndex, getContentBlocks,
+  const snapshot = (messages: ClaudeMessage[], session = 'session-a', confirmedEditKeys?: Set<string>) => ({
+    messages, currentSessionId: session, confirmedEditKeys, getContentBlocks,
     findToolResult: makeFindToolResult(messages),
+  });
+
+  it('keeps native added-file statistics and contents identical to the apply_patch history', () => {
+    const lines = Array.from({ length: 312 }, (_, index) => index < 13 ? `- item ${index}` : `line ${index}`);
+    const content = `${lines.join('\n')}\n`;
+    const nativeMessages = (status: string) => [assistantWithTools([{ id: 'native', name: 'file_change', input: {
+      status, changes: [{ path: '/plan.md', kind: { type: 'add' }, diff: content }],
+    } }])];
+    const { result, rerender } = renderHook(useFileChanges, { initialProps: snapshot(nativeMessages('inProgress')) });
+    expect(result.current).toEqual([]);
+    rerender(snapshot(nativeMessages('completed')));
+    expect(result.current[0]).toMatchObject({ status: 'A', additions: 312, deletions: 0 });
+    expect(result.current[0].operations[0].newString).toBe(content);
+    const nativeStats = result.current.map(({ filePath, status, additions, deletions }) => ({ filePath, status, additions, deletions }));
+    const history = [assistantWithTools([{ id: 'patch', name: 'apply_patch', input: { patch:
+      ['*** Begin Patch', '*** Add File: /plan.md', ...lines.map(line => `+${line}`), '*** End Patch'].join('\n'),
+    } }]), userWithResults([{ toolUseId: 'patch' }])];
+    rerender(snapshot(history));
+    expect(result.current.map(({ filePath, status, additions, deletions }) => ({ filePath, status, additions, deletions }))).toEqual(nativeStats);
+    expect(result.current[0].operations[0].newString).toBe(content);
   });
 
   it('collects every completed native patch file without requiring a separate result', () => {
     const messages = [assistantWithTools([{ id: 'native', name: 'file_change', input: { status: 'completed', changes: [
-      { path: '/added.ts', kind: 'add', diff: '+created\n' },
+      { path: '/added.ts', kind: 'add', diff: 'created\n' },
       { path: '/old.ts', kind: { type: 'update', movePath: '/moved.ts' }, diff: '@@ -1 +1 @@\n-before\n+after\n' },
-      { path: '/gone.ts', kind: 'delete', diff: '-removed\n' },
+      { path: '/gone.ts', kind: 'delete', diff: 'removed\n' },
     ] } }])];
     const { result } = renderHook(useFileChanges, { initialProps: snapshot(messages) });
     expect(result.current.map(file => file.filePath).sort()).toEqual(['/added.ts', '/gone.ts', '/moved.ts']);
@@ -39,7 +60,7 @@ describe('file ledger work budget', () => {
     const patch = '*** Begin Patch\n*** Update File: /session.ts\n@@\n-before\n+after\n*** End Patch';
     const messages = [assistantWithTools([{ id: 'first', name: 'functions.apply_patch', input: { patch } }]),
       userWithResults([{ toolUseId: 'first' }]), { type: 'user', content: 'next turn' } as ClaudeMessage,
-      assistantWithTools([{ id: 'failed', name: 'file_change', input: { changes: [{ path: '/failed.ts', kind: 'add', diff: '+failed' }], status: 'failed' } },
+      assistantWithTools([{ id: 'failed', name: 'file_change', input: { changes: [{ path: '/failed.ts', kind: 'add', diff: 'failed\n' }], status: 'failed' } },
         { id: 'unknown', name: 'apply_patch', input: { patch, status: 'unknown' } }])];
     const { result, rerender } = renderHook(useFileChanges, { initialProps: snapshot(messages) });
     expect(result.current.map(file => file.filePath)).toEqual(['/session.ts']);
@@ -138,7 +159,16 @@ describe('file ledger work budget', () => {
   it('resets on Keep All, clearing, restoration and session changes with reused ids', () => {
     const messages = [edit(), userWithResults([{ toolUseId: 'edit' }])];
     const { result, rerender } = renderHook(useFileChanges, { initialProps: snapshot(messages) });
-    rerender(snapshot(messages, 'session-a', messages.length));
+
+    // Keep All acknowledges operations by content, not by position.
+    const acknowledged = new Set(result.current.flatMap((change) => change.operations.map((op) => editOperationKey({
+      filePath: change.filePath,
+      toolName: op.toolName,
+      oldString: op.oldString,
+      newString: op.newString,
+      replaceAll: op.replaceAll,
+    }))));
+    rerender(snapshot(messages, 'session-a', acknowledged));
     expect(result.current).toEqual([]);
     rerender(snapshot([]));
     expect(result.current).toEqual([]);
@@ -227,7 +257,16 @@ describe('file ledger work budget', () => {
   it('keeps registry events current while Keep All temporarily hides the ledger', () => {
     const messages = [edit(), userWithResults([{ toolUseId: 'edit' }])];
     const first = renderHook(useFileChanges, { initialProps: snapshot(messages, 'first') });
-    first.rerender(snapshot(messages, 'first', messages.length));
+
+    // Keep All acknowledges operations by content, not by position.
+    const acknowledged = new Set(first.result.current.flatMap((change) => change.operations.map((op) => editOperationKey({
+      filePath: change.filePath,
+      toolName: op.toolName,
+      oldString: op.oldString,
+      newString: op.newString,
+      replaceAll: op.replaceAll,
+    }))));
+    first.rerender(snapshot(messages, 'first', acknowledged));
     expect(first.result.current).toEqual([]);
     renderHook(useFileChanges, { initialProps: snapshot(messages, 'second') });
     reads.mockClear();
@@ -933,7 +972,7 @@ describe('useFileChanges', () => {
     expect(r2.current[0].status).toBe('M');
   });
 
-  it('respects startFromIndex (Keep All baseline) when rebuilding from history', () => {
+  it('excludes acknowledged operations when rebuilding from history (Keep All)', () => {
     const messages: ClaudeMessage[] = [
       assistantWithTools([
         {
@@ -953,15 +992,84 @@ describe('useFileChanges', () => {
       userWithResults([{ toolUseId: 'new' }]),
     ];
 
+    const findToolResult = makeFindToolResult(messages);
+    const { result: beforeKeepAll } = renderHook(() =>
+      useFileChanges({ messages, getContentBlocks, findToolResult }),
+    );
+    expect(beforeKeepAll.current.map((f) => f.filePath).sort())
+      .toEqual(['/proj/new.ts', '/proj/old.ts']);
+
+    // Acknowledge everything currently listed, the way Keep All does.
+    const acknowledged = new Set<string>();
+    for (const change of beforeKeepAll.current) {
+      for (const op of change.operations) {
+        acknowledged.add(editOperationKey({
+          filePath: change.filePath,
+          toolName: op.toolName,
+          oldString: op.oldString,
+          newString: op.newString,
+          replaceAll: op.replaceAll,
+        }));
+      }
+    }
+
     const { result } = renderHook(() =>
       useFileChanges({
         messages,
         getContentBlocks,
-        findToolResult: makeFindToolResult(messages),
-        startFromIndex: 2,
+        findToolResult,
+        confirmedEditKeys: acknowledged,
       }),
     );
 
-    expect(result.current.map((f) => f.filePath)).toEqual(['/proj/new.ts']);
+    expect(result.current).toEqual([]);
+  });
+
+  // The regression this mechanism exists for: a reloaded transcript is rebuilt
+  // from the backend and is not isomorphic to the live-assembled array — it can
+  // carry messages the live array never had, which shifts every position-based
+  // baseline. Content fingerprints are immune to that.
+  it('keeps acknowledged operations excluded when the reloaded transcript has extra messages', () => {
+    const liveMessages: ClaudeMessage[] = [
+      assistantWithTools([
+        {
+          id: 'e1',
+          name: 'Edit',
+          input: { file_path: '/proj/kept.ts', old_string: 'a', new_string: 'b' },
+        },
+      ]),
+      userWithResults([{ toolUseId: 'e1' }]),
+    ];
+
+    const findToolResult = makeFindToolResult(liveMessages);
+    const { result: live } = renderHook(() =>
+      useFileChanges({ messages: liveMessages, getContentBlocks, findToolResult }),
+    );
+    const change = live.current[0];
+    const acknowledged = new Set(change.operations.map((op) => editOperationKey({
+      filePath: change.filePath,
+      toolName: op.toolName,
+      oldString: op.oldString,
+      newString: op.newString,
+      replaceAll: op.replaceAll,
+    })));
+
+    // Reload: the same edits, plus history the live array did not carry, in
+    // front of them.
+    const reloadedMessages: ClaudeMessage[] = [
+      assistantWithTools([{ id: 'r0', name: 'Read', input: { file_path: '/proj/kept.ts' } }]),
+      userWithResults([{ toolUseId: 'r0' }]),
+      ...liveMessages,
+    ];
+    const { result } = renderHook(() =>
+      useFileChanges({
+        messages: reloadedMessages,
+        getContentBlocks,
+        findToolResult: makeFindToolResult(reloadedMessages),
+        confirmedEditKeys: acknowledged,
+      }),
+    );
+
+    expect(result.current).toEqual([]);
   });
 });

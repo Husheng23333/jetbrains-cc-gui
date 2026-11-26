@@ -1,5 +1,6 @@
 package com.github.claudecodegui.provider.common;
 
+import com.github.claudecodegui.util.PluginIdeContext;
 import com.google.gson.Gson;
 import com.intellij.openapi.diagnostic.Logger;
 
@@ -266,6 +267,10 @@ public class SessionLiteReader {
                 }
 
                 // Skip auto-generated patterns (IDE context, hook output, etc.)
+                String reviewSummary = com.github.claudecodegui.markdown.MarkdownReviewPrompt.displaySummary(result);
+                if (reviewSummary != null) {
+                    return reviewSummary.length() > 200 ? reviewSummary.substring(0, 200) + "\u2026" : reviewSummary;
+                }
                 if (result.startsWith("<") && result.length() > 1) {
                     char nextChar = result.charAt(1);
                     if (Character.isLowerCase(nextChar)) {
@@ -321,7 +326,7 @@ public class SessionLiteReader {
                     return null;
                 }
 
-                com.google.gson.JsonElement contentElem = message.get("content");
+                com.google.gson.JsonElement contentElem = PluginIdeContext.visibleContent(message.get("content"));
                 if (contentElem.isJsonArray()) {
                     // Array format: extract text from type:"text" blocks
                     com.google.gson.JsonArray contentArray = contentElem.getAsJsonArray();

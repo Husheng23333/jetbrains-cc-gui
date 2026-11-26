@@ -32,7 +32,7 @@ export const BASH_TOOL_NAMES = new Set(['bash', 'run_terminal_cmd', 'exec_comman
 export const SEARCH_TOOL_NAMES = new Set(['grep', 'glob', 'search', 'find', 'search_files']);
 
 // Agent/subagent spawning tools
-export const AGENT_TOOL_NAMES = new Set(['task', 'agent', 'spawn_agent']);
+export const AGENT_TOOL_NAMES = new Set(['task', 'agent', 'spawn_agent', 'invoke_subagent']);
 
 // Structured code-review report tool. CamelCase names normalize to reportfindings;
 // snake_case aliases keep custom integrations compatible with the same renderer.
@@ -69,6 +69,9 @@ export const FILE_MODIFY_TOOL_NAMES = new Set([
   'strreplace',
   'apply_patch',
   'file_change',
+  // JetBrains MCP server; its current edit tool is apply_patch above
+  'create_new_file',
+  'replace_text_in_file',
 ]);
 
 /**

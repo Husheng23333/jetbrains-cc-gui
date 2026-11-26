@@ -1,4 +1,63 @@
 {
+  "startupHistory": {
+    "unloaded": "此還原工作階段的歷史訊息尚未載入。",
+    "loading": "正在載入工作階段歷史…",
+    "loaded_one": "已載入 {{count}} 則歷史訊息。",
+    "loaded_other": "已載入 {{count}} 則歷史訊息。",
+    "missing": "歷史記錄已不存在，已準備好新工作階段。",
+    "timeout": "歷史載入逾時，請點選「重試」重新載入。",
+    "cancelled": "已取消歷史載入，請點選「重試」重新載入。",
+    "failed": "歷史載入失敗，請點選「重試」重新載入。",
+    "superseded": "新的操作中斷了歷史載入，請點選「重試」重新載入。",
+    "load": "載入歷史",
+    "retry": "重試",
+    "cancel": "取消"
+  },
+  "markdownReview": {
+    "legacyContextCard": "Markdown 審閱內容",
+    "contextCard": "Markdown 審閱 · {{count}} 個項目",
+    "contextDetails": "原始碼快照與引用",
+    "settings": {
+      "submitShortcut": {
+        "label": "Markdown 註解提交快速鍵",
+        "enter": "Enter 提交，Ctrl+Enter 插入換行",
+        "ctrlEnter": "Ctrl+Enter 提交，Enter 插入換行",
+        "hint": "套用於新增與儲存註解。Shift+Enter 一律插入換行；macOS 請使用 Command。輸入法確認不會提交。"
+      },
+      "title": "Markdown 審閱（目前專案）",
+      "on": "已啟用",
+      "off": "已停用",
+      "error": "無法更新審閱偏好設定。請重新開啟設定後再試。",
+      "enabled": {
+        "label": "啟用 Markdown 預覽註解（beta）",
+        "hint": "為目前專案的 IDE 原生 Markdown 預覽加入審閱控制項。停用後互動層會立即隱藏，目前的註解會保留。啟用後，已開啟的預覽需關閉後重新開啟一次才會顯示控制項。"
+      },
+      "autoAddToChat": {
+        "label": "自動將註解加入目前聊天草稿（beta）",
+        "hint": "預設關閉。新增或編輯註解時，會將最新快照加入所選 CC GUI 聊天輸入框。傳送前請先確認草稿。完成或刪除註解時，其自動加入的草稿也會一併撤回；手動加入的註解與引用不受影響。"
+      },
+      "autoDeleteAffected": {
+        "label": "自動刪除無法再定位的註解（beta）",
+        "hint": "只要引用的開頭或結尾片段仍能定位，編輯與換行只會把註解標記為「原文已變化」，不會刪除；只有所有片段都無法定位時才會自動刪除。格式化選取可能涵蓋整個原始碼區塊。清理不代表已完成，agent 會回報未完成項目。自動加入的草稿會隨被刪除的註解一併撤回；手動加入與引用不受影響。"
+      },
+      "persist": {
+        "label": "重新啟動後保留註解與待傳送快照（beta）",
+        "hint": "預設關閉，僅在本次專案開啟期間保存。啟用後儲存至專案工作區；停用後下次 IDE 儲存會移除已保存的內容，目前的註解仍可使用。聊天訊息仍依原有方式保存。關閉狀態下，關閉專案或重新啟動 IDE 會遺失目前的註解與未傳送的草稿。"
+      },
+      "versionRequired": "Markdown 註解需要 IntelliJ IDEA 2024.3 或更新版本。"
+    },
+    "count": "{{count}} 則審閱項目",
+    "removeBatch": "從草稿移除此審閱",
+    "remove": "移除",
+    "snapshot": "此草稿為快照；之後原始碼上的註解變更不會影響它。",
+    "tooLarge": "此審閱內容過大，請先移除部分項目再傳送。",
+    "block": "原始碼區塊",
+    "source": "選取文字",
+    "quote": "引文",
+    "attached": "已定位",
+    "ambiguous": "可能位置不唯一",
+    "orphaned": "原文已變更"
+  },
   "common": {
     "ready": "就緒",
     "loading": "載入中",
@@ -26,6 +85,21 @@
     "optional": "Optional"
   },
   "chat": {
+    "planUsage": {
+      "unavailable": "用量無法使用",
+      "dash": "用量 —",
+      "loading": "正在載入用量…",
+      "tooltipWindow": "{{period}} {{percent}}%",
+      "tooltipWindowWithReset": "{{period}} {{percent}}% · {{value}} 重設",
+      "clickToSwitch": "點擊切換時間視窗",
+      "switchWindowHint": "點擊期間標籤以切換時間視窗",
+      "worstHint": "圓點顯示最差視窗（{{color}}）",
+      "worstDot": "最差視窗：{{color}}",
+      "stale": "資料可能已過期（重新整理失敗）",
+      "balanceLabel": "餘額：",
+      "balanceRemaining": "餘額：{{value}}",
+      "balanceDetail": "總額 {{total}} · 已用 {{used}}"
+    },
     "sendMessage": "給 {{provider}} 發送訊息",
     "createNewSession": "建立新會話",
     "confirmNewSession": "目前會話已有訊息，確定要建立新會話嗎？",
@@ -44,6 +118,17 @@
     "currentMode": "目前模式: {{mode}}",
     "currentModel": "目前模型: {{model}}",
     "removeAttachment": "移除附件",
+    "queue": {
+      "edit": "編輯排隊訊息",
+      "remove": "從佇列移除",
+      "editLabel": "編輯排隊訊息 {{position}}",
+      "removeLabel": "從佇列移除訊息 {{position}}",
+      "reorderLabel": "重新排序訊息 {{position}}",
+      "reorderHint": "拖曳可排序，聚焦後可用方向鍵調整",
+      "mergedIntoDraft": "排隊訊息已合併到目前草稿",
+      "attachmentsNotRestored": "排隊訊息的附件未能回填到草稿",
+      "editBlockedAttachments": "此訊息的附件無法回填，已保留在佇列中"
+    },
     "closePreview": "關閉預覽",
     "loadingDropdown": "載入中...",
     "modelsLoadFailed": "模型列表載入失敗，點擊重試",
@@ -81,6 +166,10 @@
     "localProject": "本地專案",
     "disabled": "已停用",
     "sdkNotInstalled": "{{provider}} SDK 尚未安裝，請先安裝 SDK 才能開始對話",
+    "codexUltraCapabilitiesLoading": "正在確認 Ultra 是否可用。模型載入完成後請重試傳送。",
+    "codexUltraCapabilitiesUnavailable": "無法確認 Ultra 是否可用。請重新載入模型或選擇其他推理強度。",
+    "sessionTransitionTakingLonger": "切換對話耗時較長。您可以再次嘗試開啟；排隊的訊息已暫停傳送。",
+    "sessionTransitionInProgress": "正在切換對話，請稍候。",
     "sdkStatusLoading": "Checking SDK status...",
     "pasteImagePreparing": "正在準備貼上的圖片...",
     "sdkStatusUnavailable": "無法檢查 SDK 狀態。",
@@ -102,6 +191,7 @@
     "totalDuration": "本次耗時",
     "tokenUsage": "輸入 {{input}} / 輸出 {{output}}",
     "tokenUsageDetail": "本輪合計 — 輸入 {{input}} · 快取寫入 {{cacheWrite}} · 快取讀取 {{cacheRead}} · 輸出 {{output}}",
+    "tokenUsageThinking": "思考 {{thinking}}",
     "cacheHitsWithRatio": "（快取命中 {{tokens}}，{{ratio}}）",
     "search": {
       "ariaLabel": "在對話中搜尋",
@@ -116,8 +206,7 @@
       "matchCase": "區分大小寫 (Alt+C)",
       "wholeWord": "全字符合 (Alt+W)",
       "regex": "正規表達式 (Alt+R)",
-      "invalidRegex": "正規表達式無效",
-      "openTooltip": "在對話中搜尋 (Cmd/Ctrl+F)"
+      "invalidRegex": "正規表達式無效"
     },
     "compactSummary": {
       "receivedTime": "記錄時間",
@@ -144,8 +233,37 @@
     "codexReviewStarted": "Codex 正在審查工作區變更",
     "codexDiffUsage": "請直接使用 /diff，無需參數",
     "codexApprovalsUsage": "請直接使用 /approvals，無需參數",
+    "codexCliOutdated": "Codex CLI {{version}} 版本較舊，部分模型和權限模式可能無法正常使用，請升級到 {{minimumVersion}} 或更高版本。",
     "codexSandboxConflict": "Codex 自動審查不能使用 danger-full-access 沙箱，請改用 workspace-write 或請求批准模式。",
-    "continueRefiningPlan": "繼續完善此計畫："
+    "continueRefiningPlan": "繼續完善此計畫：",
+    "backgroundTasksRunning": "{{count}} 個背景工作正在執行",
+    "backgroundTasksRunning_one": "{{count}} 個背景工作正在執行",
+    "backgroundTasksRunning_other": "{{count}} 個背景工作正在執行",
+    "stopBackgroundTasks": "全部停止",
+    "backgroundTasksPill": "{{count}} 個背景工作",
+    "backgroundTasksPill_one": "{{count}} 個背景工作",
+    "backgroundTasksPill_other": "{{count}} 個背景工作",
+    "backgroundTasksTitle": "背景工作",
+    "backgroundTasksActive": "{{count}} 個執行中",
+    "backgroundTasksActive_one": "{{count}} 個執行中",
+    "backgroundTasksActive_other": "{{count}} 個執行中",
+    "backgroundTasksStopAfterAnswer": "回答結束後可停止",
+    "backgroundTaskDetails": {
+      "type": "類型",
+      "taskId": "工作 ID",
+      "runId": "執行 ID",
+      "parent": "父工作",
+      "elapsed": "已執行"
+    },
+    "backgroundTaskTypes": {
+      "local_bash": "指令",
+      "local_agent": "子代理",
+      "remote_agent": "遠端代理",
+      "local_workflow": "工作流程",
+      "in_process_teammate": "隊友",
+      "monitor_mcp": "監控",
+      "other": "工作"
+    }
   },
   "settings": {
     "title": "設定",
@@ -193,6 +311,11 @@
         "placeholder": "例如 /usr/local/bin/claude — 留空則使用內建 SDK",
         "hint": "可選。設定後，外掛程式將啟動此二進位檔案，而非內建的 @anthropic-ai/claude-agent-sdk。儲存時會重新啟動守護程序。"
       },
+      "claudeConfigDir": {
+        "label": "Claude 設定目錄（覆寫）",
+        "placeholder": "例如 ~/.claude-work — 留空則使用 CLAUDE_CONFIG_DIR 或 ~/.claude",
+        "hint": "選填。聊天歷史、工作階段操作與 Claude 程序會讀取此目錄，而非 ~/.claude。外掛的 settings.json 與 MCP 伺服器會跟隨此目錄；Skills 與 Hooks 頁面仍使用 ~/.claude。用量統計會將此目錄與 ~/.claude 合併計算（不按設定檔區分），執行中的統計服務會在下次同步時讀取；清除後已計入的用量仍會保留。請使用絕對路徑或 ~/…；使用 WSL 的 node 時可填寫 Linux 路徑，例如 /home/me/.claude-work，且不會使用 Windows 的 CLAUDE_CONFIG_DIR。請與同一設定檔的 Claude CLI 路徑搭配使用。儲存時常駐程序會重新啟動。"
+      },
       "workingDirectory": {
         "label": "Working Directory",
         "placeholder": "e.g. project1 or leave empty to use project root",
@@ -231,6 +354,12 @@
         "statusFollowEditor": "目前跟隨編輯器字體：{{font}}",
         "statusCustom": "目前使用自訂程式碼字體：{{font}}"
       },
+      "sessionGitRepositoryMatching": {
+        "label": "依 Git 遠端儲存庫比對歷史工作階段",
+        "enabled": "啟用",
+        "disabled": "停用",
+        "hint": "顯示遠端主機、擁有者及儲存庫皆相同的 Codex 與 Claude Code 工作階段。無法讀取 Git 資訊時依工作目錄比對。"
+      },
       "streaming": {
         "label": "Streaming",
         "enabled": "Enabled",
@@ -242,6 +371,17 @@
         "enabled": "已啟用",
         "disabled": "已停用",
         "hint": "開啟後，在專案樹選擇檔案時會自動將檔案路徑告訴 AI（注意：只傳遞檔案路徑，不傳檔案內容）。關閉後需要手動操作。"
+      },
+      "loadHistoryOnStartup": {
+        "label": "啟動時載入工作階段歷史",
+        "enabled": "啟用",
+        "disabled": "停用",
+        "hint": "啟用後，還原的工作階段會自動載入歷史訊息。失敗或逾時後需手動重試。"
+      },
+      "historyLoadTimeout": {
+        "label": "歷史載入逾時",
+        "unit": "秒",
+        "hint": "自動還原與手動載入共用此逾時（5–120 秒），可在對話中重試。"
       },
       "promptEnhancer": {
         "label": "增強提示詞",
@@ -519,16 +659,6 @@
           "importanceHint": "重要度越高，自動補全時越靠前"
         },
         "timeAgo": {
-          "yearsAgo_one": "{{count}} year ago",
-          "yearsAgo_other": "{{count}} years ago",
-          "monthsAgo_one": "{{count}} month ago",
-          "monthsAgo_other": "{{count}} months ago",
-          "daysAgo_one": "{{count}} day ago",
-          "daysAgo_other": "{{count}} days ago",
-          "hoursAgo_one": "{{count}} hour ago",
-          "hoursAgo_other": "{{count}} hours ago",
-          "minutesAgo_one": "{{count}} minute ago",
-          "minutesAgo_other": "{{count}} minutes ago",
           "justNow": "剛剛",
           "yearsAgo": "{{count}}年前",
           "monthsAgo": "{{count}}個月前",
@@ -571,6 +701,38 @@
     "wechatPay": "微信",
     "paypal": "PayPal",
     "provider": {
+      "backup": {
+        "exportInvalidConfig": "匯出失敗：已儲存的供應商設定未通過驗證，未產生備份檔案。",
+        "errorProvider": "請檢查第 {{index}} 筆已儲存的供應商（不含本機設定或 CLI 登入項目）。",
+        "errorField": "欄位：{{field}}。",
+        "import": "匯入",
+        "export": "匯出",
+        "importFile": "從 CC GUI 設定檔匯入",
+        "importTitle": "匯入 {{engine}} 供應商",
+        "exportTitle": "匯出 {{engine}} 供應商",
+        "scope": "僅處理目前分頁中已儲存的供應商設定（含金鑰），不包含本機 CLI 登入狀態或啟用狀態。",
+        "mergeHint": "僅匯入可信任的檔案。相同設定會略過，不同設定會新增；不覆寫、不自動啟用。名稱、備註、ID 和建立時間不參與去重。",
+        "selectFile": "選擇設定檔",
+        "passwordOptional": "匯出密碼（選填）",
+        "passwordRequired": "請輸入檔案密碼",
+        "confirmPassword": "再次輸入密碼",
+        "plaintextWarning": "我了解：不設定密碼將以明文匯出 API 金鑰，請妥善保管檔案。",
+        "passwordHint": "密碼至少 8 個字元，建議使用長且獨特的密碼。遺失密碼無法復原。",
+        "passwordShort": "密碼至少需要 8 個字元。",
+        "passwordMismatch": "兩次輸入的密碼不一致。",
+        "working": "正在處理，請稍候…",
+        "importSuccess": "匯入完成：新增 {{imported}} 筆，略過 {{skipped}} 筆重複設定。",
+        "exportSuccess": "設定已匯出。",
+        "exportPartial": "已匯出 {{exported}} 筆供應商。略過 {{skipped}} 筆未通過驗證的已儲存供應商：{{positions}}（編號不含本機設定或 CLI 登入項目）。",
+        "invalidFile": "檔案格式無效、版本不支援或包含無效設定，未匯入。",
+        "wrongEngine": "檔案類型與目前分頁不符，請切換至對應的 Claude Code / Codex 分頁。",
+        "tooLarge": "檔案或設定過大（檔案上限 8 MiB，最多 2000 筆供應商）。",
+        "empty": "沒有可處理的供應商設定。",
+        "wrongPassword": "密碼錯誤或加密檔案已損壞，未匯入。",
+        "failed": "操作失敗，請檢查檔案權限與設定後重試。",
+        "busy": "另一個匯入／匯出操作正在進行，請稍後重試。",
+        "timeout": "等待結果逾時。操作可能仍在進行，請先檢查清單或匯出檔案，再重試。"
+      },
       "currentConfig": "目前ClaudeCode配置",
       "loading": "載入中...",
       "noConfig": "暫無配置資訊",
@@ -872,6 +1034,11 @@
         "saveChanges": "Save"
       }
     },
+    "gemini": {
+      "idleReapLabel": "自動停止無輸出的回合",
+      "idleReapHelp": "若 Gemini 回合連續此分鐘數沒有任何輸出，則自動結束——通常是 CLI 卡在互動提示或後端停止回應。設為 0 可停用自動停止。",
+      "idleReapDisabled": "已停用"
+    },
     "cli": {
       "hint": "以下 CLI 需在系統終端自行安裝並完成設定。外掛只負責偵測是否已安裝及版本號，不會替你自動安裝。請先在終端確認可正常使用，再回到此處使用。",
       "refresh": "Re-check",
@@ -923,6 +1090,10 @@
         "dsh": {
           "name": "DeepSeek Harness",
           "description": "DeepSeek 終端智慧體 CLI（dsh）"
+        },
+        "gemini": {
+          "name": "Antigravity CLI",
+          "description": "Google Antigravity 終端程式碼智慧體 (agy)"
         }
       },
       "installDialog": {
@@ -980,9 +1151,138 @@
       "source": "Source: {{source}}",
       "readOnlyTitle": "Read only",
       "readOnlyDesc": "Inspect files without writing to the workspace."
+    },
+    "hooks": {
+      "title": "Hooks 管理",
+      "description": "檢視並安全編輯 Codex 和 Claude Code Hooks。",
+      "refresh": "重新整理",
+      "provider": "提供者",
+      "scope": "範圍",
+      "all": "全部",
+      "allProviders": "所有提供者",
+      "allScopes": "所有範圍",
+      "global": "使用者級",
+      "project": "專案級",
+      "projectLocal": "專案級（本機覆寫）",
+      "search": "搜尋 Hooks",
+      "searchPlaceholder": "搜尋事件、命令或路徑",
+      "noMatches": "沒有符合篩選條件的 Hook。",
+      "toggleUnavailable": "確認各提供者的執行語意前，無法個別啟用或停用。",
+      "enabled": "已啟用",
+      "disabled": "已停用",
+      "enable": "啟用 Hook",
+      "disable": "停用 Hook",
+      "managedToggleHint": "由 CC GUI 管理的開關，保留原始設定並可還原。",
+      "nativeToggleHint": "修改 Codex 使用者級啟用偏好；執行仍受信任、功能設定與原則控制。",
+      "toggleFailed": "Hook 切換失敗",
+      "loading": "正在掃描 Hook 位置…",
+      "empty": "未發現 Hook。",
+      "valid": "格式已辨識",
+      "validationWarning": "需要檢查",
+      "matcher": "比對條件",
+      "noCommand": "未提供命令",
+      "readOnly": "唯讀",
+      "viewSource": "檢視原始檔",
+      "editSource": "編輯原始檔",
+      "sourcePreview": "Hook 原始檔預覽",
+      "sourceTab": "原始碼",
+      "detailsTab": "詳細資料",
+      "viewMode": "Hook 檢視",
+      "loadingSource": "正在載入原始檔…",
+      "sourceEditor": "Hook 原始檔編輯器",
+      "affectedFile": "受影響的檔案",
+      "backupDirectory": "備份目錄",
+      "latestBackup": "還原本次編輯工作階段的上次備份",
+      "lastModified": "最後修改時間",
+      "event": "事件",
+      "format": "格式",
+      "revision": "修訂版本",
+      "command": "命令",
+      "validationIssues": "驗證問題",
+      "providerFields": "提供者專屬欄位",
+      "noProviderFields": "無提供者專屬欄位",
+      "none": "無",
+      "reviewChanges": "檢查修改",
+      "hideChanges": "收起差異",
+      "noChanges": "沒有需要儲存的修改",
+      "technicalInfo": "技術資訊",
+      "moreActions": "更多操作",
+      "conflictTitle": "原始檔已被外部修改",
+      "conflictDescription": "重新載入外部版本，或保留草稿並同步最新修訂版本。",
+      "reloadExternal": "重新載入外部版本",
+      "keepDraft": "保留草稿並同步",
+      "discardDraft": "放棄草稿",
+      "discardChangesTitle": "放棄尚未儲存的修改？",
+      "discardChangesMessage": "關閉編輯器後將無法復原尚未儲存的修改。",
+      "backupOnSave": "儲存前會建立備份",
+      "save": "儲存",
+      "saving": "正在儲存…",
+      "restore": "還原本次編輯工作階段的上次備份",
+      "saveFailed": "儲存失敗",
+      "sourceLoadFailed": "重新讀取原始檔失敗",
+      "noPreview": "暫無預覽。",
+      "sourceNotice": "{{count}} 個 Hook 來源需要檢查；受影響項目的操作已受限。",
+      "sharedProjectWarning": "專案設定可能被提交並影響其他使用者，分享前請檢查檔案差異。",
+      "bridgeUnavailable": "與 IDE 的連線無法使用，請重新開啟設定頁。",
+      "sourceTimeout": "讀取逾時，請重新載入原始檔後再編輯。",
+      "mutationTimeout": "等待確認逾時；修改可能已儲存，請重新整理後再試。",
+      "mutationConfirmedLate": "已收到延遲的儲存確認。草稿已保留，請重新載入原始檔以同步。",
+      "issues": {
+        "COMMAND_MISSING": "缺少命令",
+        "TYPE_MISSING": "缺少類型",
+        "HOOKS_NOT_OBJECT": "hooks 必須是物件",
+        "SETTINGS_NOT_OBJECT": "設定必須是物件",
+        "INVALID_JSON": "JSON 無效",
+        "HOOK_ENTRY_NOT_OBJECT": "Hook 項目必須是物件",
+        "INVALID_TOML": "TOML 無效",
+        "CODEX_HOOKS_NOT_TABLE": "Codex hooks 必須是設定表",
+        "CODEX_HOOK_EVENT_NOT_ARRAY": "Hook 事件必須是陣列",
+        "CODEX_HOOK_ENTRY_NOT_TABLE": "Hook 項目必須是設定表",
+        "CODEX_ENABLED_INVALID": "啟用欄位無效",
+        "CODEX_MATCHER_INVALID": "比對條件無效",
+        "CODEX_COMMANDS_INVALID": "缺少有效命令或 MCP 工具",
+        "CODEX_HOOKS_FEATURE_DISABLED": "Hooks 功能已停用",
+        "READ_FAILED": "讀取失敗",
+        "CODEX_EVENT_UNSUPPORTED": "已驗證的格式不支援此事件",
+        "CODEX_HANDLER_UNSUPPORTED": "已驗證的格式不支援此處理器類型",
+        "CODEX_HOOK_FILE_FIELDS_INVALID": "Hook 檔案欄位無效",
+        "CODEX_STATE_INLINE_UNSUPPORTED": "無法安全編輯內嵌狀態，請使用狀態設定表。",
+        "LINKED_SOURCE_READ_ONLY": "連結檔案為唯讀，請直接編輯原始檔案。",
+        "HOOK_SOURCE_UNAVAILABLE": "來源檔案無法使用。"
+      },
+      "sharedToggleTitle": "確認修改共用專案設定",
+      "sharedToggleMessage": "此操作會修改共用的 .claude/settings.json，可能影響其他協作者。已停用 Hook 的復原記錄僅保存在本機。",
+      "confirmSharedToggle": "修改共用設定",
+      "sensitiveSourceWarning": "此檔案可能含有憑證及其他敏感設定。準備編輯時再點擊檢視。",
+      "revealSource": "檢視設定內容",
+      "errors": {
+        "HOOK_SHARED_CONFIRMATION_REQUIRED": "請先確認修改共用專案設定。",
+        "HOOK_CATALOG_TIMEOUT": "Hooks 重新整理逾時，請重新整理後再修改其他 Hook。",
+        "HOOK_REVISION_CONFLICT": "檔案已在此頁面之外被修改，請重新整理後重試。",
+        "HOOK_RESTORE_CONFLICT": "無法還原：檔案中該事件已不是清單。請先修正檔案再重試。",
+        "HOOK_TOGGLE_LOCKED": "此檔案正有其他修改在進行，請稍後重試。",
+        "HOOK_TOGGLE_LOCK_FAILED": "無法為本次修改鎖定檔案。",
+        "HOOK_FILE_LOCKED": "此檔案正有其他修改在進行，請稍後重試。",
+        "HOOK_NOT_FOUND": "檔案中已沒有這個 Hook，請重新整理清單。",
+        "HOOK_NOT_DISABLED": "這個 Hook 並未停用，請重新整理清單。",
+        "HOOK_ALREADY_DISABLED": "這個 Hook 已經停用，請重新整理清單。",
+        "HOOK_STATE_WRITE_FAILED": "無法儲存停用紀錄，已盡量復原對檔案的修改。",
+        "HOOK_TOGGLE_FAILED": "無法修改這個 Hook。",
+        "INVALID_HOOK_PATH": "此檔案不能在這裡修改。連結檔案和不在已知位置的檔案為唯讀。",
+        "INVALID_BACKUP_PATH": "備份檔案無法使用。",
+        "SOURCE_TOO_LARGE": "檔案超過 128 KB，無法在這裡編輯。",
+        "INVALID_REQUEST": "請求無效，請重新整理頁面後重試。",
+        "WRITE_FAILED": "檔案儲存失敗。",
+        "RESTORE_FAILED": "備份還原失敗。",
+        "UNSUPPORTED_HOOK_PROVIDER": "這類 Hook 不能在這裡修改。",
+        "UNKNOWN_ERROR": "未知錯誤。"
+      }
     }
   },
   "history": {
+    "confirmDirectoryTitle": "在另一個目錄中開啟工作階段？",
+    "confirmDirectoryMessage": "指令與檔案修改將在下方目錄中執行。",
+    "executionDirectory": "執行目錄",
     "title": "歷史會話",
     "sessionDeleted": "會話已刪除",
     "confirmDelete": "確認刪除",
@@ -1022,6 +1322,16 @@
     "cancelEditButton": "取消",
     "titleTooLong": "標題過長（最多50個字元）",
     "titleUpdated": "標題已更新",
+    "regenerateTitle": "根據會話內容重新產生標題",
+    "titleRegenerated": "標題已重新產生",
+    "titleRegenerateFailed": {
+      "generic": "標題重新產生失敗",
+      "emptySession": "會話沒有可用的對話內容，無法產生標題",
+      "disabled": "AI 標題產生已在設定中關閉",
+      "sessionNotFound": "未找到會話記錄檔案",
+      "generationFailed": "標題產生失敗，請稍後再試",
+      "customTitle": "該會話已手動命名，手動標題優先於 AI 標題"
+    },
     "copySessionId": "複製會話ID用於CLI恢復",
     "sessionIdCopied": "會話ID已複製",
     "copyFailed": "複製失敗",
@@ -1059,7 +1369,9 @@
       "claude-vscode": "此會話由 VS Code 插件創建，CLI 默認不顯示。點擊「轉為CLI」可使其出現在終端 CLI 的 /resume 列表中",
       "remote": "此會話由遠程 Claude Code 實例創建"
     },
-    "loadMore": "載入更多"
+    "loadMore": "載入更多",
+    "sessionInUse": "會話正在使用中，無法刪除。",
+    "deleteFailed": "刪除會話失敗，請重試。"
   },
   "permission": {
     "dialogTitle": "權限請求",
@@ -1092,6 +1404,7 @@
     "codexDeliveryUnconfirmed": "Codex 尚未確認收到你的選擇（{{error}}）。它可能仍會生效，請不要重複作答；如果對話沒有繼續，請點擊停止後重新傳送。"
   },
   "askUserQuestion": {
+    "ompTitle": "OMP 有一些問題想問你",
     "title": "Claude 有一些問題想問你",
     "progress": "問題 {{current}} / {{total}}",
     "multiSelectHint": "可以選擇多個選項",
@@ -1105,7 +1418,11 @@
     "timeoutWarning": "請儘快回答，對話框將在 {{seconds}} 秒後自動關閉",
     "expand": "展開",
     "collapse": "收起",
-    "clickToAnswer": "點擊回答"
+    "clickToAnswer": "點擊回答",
+    "recordTitle": "Codex 提問",
+    "recordAnswer": "你的回答",
+    "recordSkipped": "已略過（未作答就關閉了）",
+    "answerNotSent": "你對 Codex 提問的回答沒有送出，因為目前開啟的是另一個對話。請回到原來的對話，把回答重新傳送一次。"
   },
   "planApproval": {
     "title": "Plan Ready for Approval",
@@ -1138,7 +1455,11 @@
     "invalidJsonConfig": "配置 JSON 格式錯誤，請修正後再儲存",
     "providerAdded": "供應商新增成功",
     "providerUpdated": "供應商更新成功",
-    "providerDeleted": "供應商刪除成功"
+    "providerDeleted": "供應商刪除成功",
+    "codexSettingsDispatchFailed": "無法將 Codex 設定傳送到 IDE，請重新開啟對話後再試。",
+    "codexSettingsRuntimeInactive": "Codex 執行環境未啟用，請重新開啟對話後重試。",
+    "codexSettingsServiceUnavailable": "Codex 服務目前無法使用，請重新開啟對話後重試。",
+    "codexSettingsUpdateFailed": "無法確認 Codex 設定，請重新開啟對話後重試。"
   },
   "config": {
     "clickToCopy": "點選複製",
@@ -1481,6 +1802,12 @@
     "bashGroupCompleted": "completed",
     "bashGroupAllCompleted": "All Completed",
     "bashGroupFailed": "failed",
+    "bashGroupCopyCommand": "複製命令",
+    "bashGroupCopyOutput": "複製輸出",
+    "bashGroupOutput": "輸出",
+    "bashGroupOutputFailed": "執行失敗",
+    "bashGroupRunning": "執行中…",
+    "bashGroupNoOutput": "（無輸出）",
     "reportFindings": {
       "title": "審查發現",
       "findingsCount_one": "{{count}} 項發現",
@@ -1526,6 +1853,7 @@
       "loading": "正在載入 Agent 程序…",
       "unavailable": "本次工作階段未產生程序記錄（需要工作階段 ID）。",
       "reportGenerated": "已產生結構化分析報告",
+      "historyTruncated": "歷史記錄已縮短，省略了 {{count}} 筆記錄。初始任務與最近活動仍保留。",
       "unitMs": "毫秒",
       "unitS": "秒",
       "unitTools": "個工具",
@@ -1704,6 +2032,9 @@
     }
   },
   "models": {
+    "gemini": {
+      "vanishedSelection": "模型 {{model}} 已不再可用，已切換回 CLI 預設模型。"
+    },
     "addModel": "新增模型",
     "searchPlaceholder": "搜尋模型",
     "clearSearch": "清除搜尋",
@@ -1744,13 +2075,13 @@
         "label": "Haiku 4.5",
         "description": "Haiku 4.5 · 速度最快，適合快速回覆"
       },
+      "fable52": {
+        "label": "Fable 5.2",
+        "description": "Fable 5.2 · 最強大 · Mythos 級"
+      },
       "fable51": {
         "label": "Fable 5.1",
-        "description": "Fable 5.1 · 最強大 · Mythos 級"
-      },
-      "fable5": {
-        "label": "Fable 5",
-        "description": "Fable 5 · 保留的前代 Fable 模型"
+        "description": "Fable 5.1 · 保留的前代 Fable 模型"
       }
     },
     "longContext": {
@@ -1805,7 +2136,12 @@
     "effort": "思考強度",
     "speed": "速度",
     "preset": "預設組合",
-    "model": "模型"
+    "approvals": "審核",
+    "model": "模型",
+    "ultracode": {
+      "label": "Ultracode",
+      "description": "Claude 原生工作流程，自動委派子任務，保留目前推理強度。"
+    }
   },
   "modes": {
     "default": {
@@ -1837,6 +2173,12 @@
       "shortLabel": "全自動",
       "tooltip": "略過所有權限檢查",
       "description": "完全自動化，略過所有權限檢查【請謹慎使用】"
+    },
+    "sandbox": {
+      "label": "沙盒模式",
+      "shortLabel": "沙盒",
+      "tooltip": "在沙盒中執行（僅 Gemini CLI）",
+      "description": "於啟用終端限制的沙盒中執行（Gemini CLI）"
     }
   },
   "workspaceDiff": {
@@ -1921,7 +2263,7 @@
       "label": "ZCode"
     },
     "gemini": {
-      "label": "Gemini Cli"
+      "label": "Antigravity CLI"
     },
     "opencode": {
       "label": "OpenCode"
@@ -1931,11 +2273,6 @@
     },
     "omp": {
       "label": "OMP CLI"
-    },
-    "beta": {
-      "badge": "Beta",
-      "title": "Beta 功能",
-      "message": "此功能仍處於 Beta 階段。如果遇到使用 Bug，請及時回饋給作者。"
     },
     "dsh": {
       "label": "DeepSeek Harness"
@@ -2012,6 +2349,10 @@
     "xhigh": {
       "label": "最多",
       "description": "最深推理，最高精度"
+    },
+    "ultra": {
+      "label": "Ultra",
+      "description": "最高推理深度，自動委派子任務"
     }
   },
   "errorBoundary": {
@@ -2049,6 +2390,16 @@
     "codexNetworkErrorChecks": "請檢查：\n1. 網路連線是否正常\n2. 如果使用代理，請確認代理配置\n3. 防火牆是否阻止了連線",
     "codexError": "Codex 出現錯誤：",
     "codexErrorCheck": "請檢查網路連線和 Codex 配置",
+    "geminiAuthRequired": "需要 Gemini CLI 認證：",
+    "geminiAuthCause": "- 原因：Gemini CLI (agy) 未登入，或憑證已過期。",
+    "geminiAuthResolution": "- 解決方法：在外部終端執行 'agy'，完成互動式 Google 登入流程。",
+    "geminiAuthNote": "- 注意：本外掛不管理 Google 憑證，也不會在外掛內執行 Google 登入。",
+    "geminiErrorDetails": "錯誤詳情",
+    "geminiIdleReapStopped": "Gemini 回合已自動停止：Gemini CLI (agy) 已 {{window}} 沒有任何輸出。",
+    "geminiIdleReapCauseAlive": "- 可能原因：CLI 程序仍在執行但沒有輸出——很可能卡在互動式提示上（最常見的是認證），或因後端/網路問題停滯。",
+    "geminiIdleReapCauseExited": "- 可能原因：CLI 程序已經結束，未回傳結果。",
+    "geminiIdleReapWhatToDo": "- 處理方法：在外部終端執行 'agy' 檢查登入狀態，然後取消並重試；如果該回合確實需要長時間靜默（例如較長的建置），可以調高該上限。",
+    "geminiIdleReapSetting": "- 此上限可設定：在 Gemini 外掛設定中設定 gemini.idleReapMinutes（0 表示停用自動停止）。",
     "codexThinkingHint": "Codex 未返回 reasoning 項。若依然看不到思考過程，請參考 docs/codex/docs/config.md 中 hide_agent_reasoning/show_raw_agent_reasoning 的說明，並確認 OpenAI 帳號已完成驗證。",
     "userDeniedPermission": "用戶拒絕了 {{toolName}} 工具的使用權限",
     "userDidNotProvideAnswers": "用戶未提供問題答案",
@@ -2061,7 +2412,19 @@
     "uploadedImages": "已上傳 {{count}} 張圖片",
     "uploadedAttachments": "已上傳附件",
     "emptyMessage": "空訊息",
-    "attachment": "附件"
+    "attachment": "附件",
+    "workspaceSubstituted": "[提示] 工作目錄已替換：請求的目錄為 \"{{requested}}\"，實際使用 \"{{effective}}\" ({{reason}})。",
+    "workspaceReasonUnsafe": "不安全的工作目錄",
+    "workspaceReasonPluginInternal": "外掛內部目錄",
+    "workspaceReasonMissing": "目錄不存在",
+    "workspaceReasonNotADirectory": "不是目錄",
+    "workspaceReasonTemporary": "暫存目錄",
+    "attachmentNotDelivered": {
+      "notice": "[提示] 附加檔案未送達：\"{{name}}\" ({{reason}})。",
+      "nonImage": "僅支援圖片附加檔案",
+      "tooLarge": "圖片超過每張 2 MB 的限制",
+      "invalid": "圖片資料缺失或無法讀取"
+    }
   },
   "changelog": {
     "title": "版本更新",
@@ -2077,6 +2440,25 @@
     "fast": {
       "label": "Fast",
       "description": "Codex 快速回應模式（會產生額外消耗）"
+    }
+  },
+  "ompApprovals": {
+    "title": "選擇 OMP 審核模式",
+    "default": {
+      "label": "預設",
+      "description": "未設定時完全自動（OMP 的 tools.approvalMode）"
+    },
+    "alwaysAsk": {
+      "label": "詢問",
+      "description": "編輯與指令執行前都會詢問"
+    },
+    "write": {
+      "label": "自動核准編輯",
+      "description": "僅在執行指令前詢問"
+    },
+    "yolo": {
+      "label": "完全自動",
+      "description": "從不詢問"
     }
   },
   "dshPresets": {
@@ -2124,14 +2506,85 @@
     "updateClaudeSdkCustomCli": "SDK 已更新至 {{version}}，但外掛執行的是自訂的 Claude CLI（{{path}}）。請按方案二更新它。",
     "updateClaudeSdkAlreadyLatest": "{{version}} 已是本外掛支援的最新 SDK，而此模型需要更新的 Claude Code。請在外掛發布新版本後更新外掛，或改用其他模型。",
     "codexWriterConflict": {
-      "title": "Codex 執行緒被佔用",
-      "intro": "此會話正由另一個 Codex 回合或用戶端寫入，本次傳送未能啟動。",
-      "reason": "請在正在使用此會話的用戶端停止回合，確認結束後再傳送。"
+      "title": "Codex 會話被佔用",
+      "intro": "另一個 Codex 用戶端或聊天視窗仍持有此會話的寫入權。",
+      "reason": "這不表示會話已過期。外掛不會自動刪除寫入鎖或停止其他用戶端。",
+      "solutions": {
+        "releaseWriter": {
+          "title": "在佔用會話的用戶端釋放它",
+          "step0": "在正在使用此會話的 Codex 用戶端或聊天視窗停止任務，並關閉或釋放該會話。",
+          "step1": "確認該用戶端釋放會話後，回到這裡重新傳送。請勿透過刪除寫入鎖檔案強制恢復。"
+        }
+      }
+    },
+    "codexThreadClosing": {
+      "title": "Codex 會話仍在關閉",
+      "intro": "Codex 尚未完成此會話的關閉流程，暫時無法恢復。",
+      "reason": "外掛會在任務啟動前針對這個明確的關閉狀態短暫重試；若仍未恢復，將保留原始錯誤。",
+      "solutions": {
+        "waitForClose": {
+          "title": "等待上一個會話完成關閉",
+          "step0": "等待原 Codex 用戶端或聊天視窗釋放此會話後，再次嘗試。",
+          "step1": "若反覆出現，請在原用戶端釋放會話後，從歷史清單重新開啟此會話。"
+        }
+      }
+    },
+    "codexThreadHistoryMissing": {
+      "title": "找不到 Codex 歷史記錄",
+      "intro": "目前的 Codex 執行環境找不到此會話的原生歷史記錄。",
+      "reason": "歷史目錄變更或首次初始化未完成都可能導致此錯誤，不能據此判定記錄已被刪除。",
+      "solutions": {
+        "checkStorage": {
+          "title": "檢查原歷史記錄的位置",
+          "step0": "確認 Codex 使用原來的 CODEX_HOME 與主機環境，尤其注意本機與 WSL 的差異。",
+          "step1": "恢復原歷史目錄或備份後，從歷史清單重新開啟此會話。"
+        },
+        "startNewIfMissing": {
+          "title": "僅在歷史無法找回時重新開始",
+          "step0": "只有確認原始歷史無法恢復時，才新建會話並重新提供必要的上下文。這裡顯示的聊天訊息不會自動恢復 Codex 的原生上下文。"
+        }
+      }
+    },
+    "codexThreadArchived": {
+      "title": "Codex 會話已封存",
+      "intro": "Codex 回報此會話已封存，無法直接繼續。",
+      "reason": "封存不表示執行緒過期，恢復此會話不需要另建會話。",
+      "solutions": {
+        "unarchive": {
+          "title": "取消原會話的封存",
+          "step0": "在原 Codex 用戶端取消封存，或依原始錯誤中提供的取消封存命令操作。",
+          "step1": "重新整理外掛的歷史清單，重新開啟此會話後再傳送。"
+        }
+      }
+    },
+    "codexThreadResumeConfiguration": {
+      "title": "Codex 設定阻止了會話恢復",
+      "intro": "Codex 無法載入設定，或某個必要的 MCP 服務初始化失敗。",
+      "reason": "新建會話無法修復同一份設定，外掛也不會自動停用必要的服務。",
+      "solutions": {
+        "repairConfiguration": {
+          "title": "修復 Codex 指出的設定問題",
+          "step0": "查看原始錯誤，確認失敗的設定項目或必要的 MCP 服務。",
+          "step1": "在 Codex、供應商或 MCP 設定中修復對應的設定、憑證或連線，再重新開啟會話並重試。"
+        }
+      }
     },
     "codexThreadResume": {
-      "title": "工作階段執行緒已失效",
-      "intro": "新建工作階段即可解決此問題。目前工作階段的執行緒 ID 在 Codex 伺服器端已不存在。",
-      "reason": "Codex 服務端會在一段時間後清除舊執行緒，繼續上一次工作階段時可能觸發此錯誤。"
+      "title": "無法恢復 Codex 會話",
+      "intro": "Codex 恢復此會話失敗，目前尚未確認具體原因。",
+      "reason": "恢復失敗不代表會話已過期。外掛會保留原會話身分，不會靜默替換成空白會話。",
+      "solutions": {
+        "inspectCause": {
+          "title": "先查看原始錯誤再重試",
+          "step0": "查看原始錯誤，並核對此會話使用的供應商、Codex 執行環境與歷史目錄。",
+          "step1": "如果已經出現回覆或工具執行，請先確認結果再重新傳送，避免重複執行任務。"
+        },
+        "checkCli": {
+          "title": "檢查 Codex CLI 相容性",
+          "step0": "比較終端機中的版本與外掛 CLI 頁面；若設定了自訂 CLI 路徑，請對該程式執行 --version。",
+          "step1": "若原始錯誤指出 CLI 或協定版本不受支援，請依官方說明更新 Codex，然後重新整理 CLI 偵測。"
+        }
+      }
     },
     "sdkNativeBinaryMissing": {
       "title": "SDK 安裝不完整 — 缺少 native 二進位檔",
@@ -2165,6 +2618,25 @@
         }
       }
     },
+    "claudeCodeWindowsTooOld": {
+      "title": "目前的 Windows 版本無法啟動 Claude Code",
+      "intro": "Windows 阻止了 Claude Code 啟動，因為找不到它需要的系統函式（錯誤 0xC0000139）。這通常表示 Windows 版本過舊：Claude Code 2.1.118 及更新版本使用 ClosePseudoConsole，需要 Windows 10 1809 或 Windows Server 2019。",
+      "reason": "Windows 在載入程式時就拒絕了它，此時 Claude Code 還沒有執行，所以更換模型、供應商或權限設定都沒有幫助。",
+      "solutions": {
+        "updateWindows": {
+          "title": "方案一：升級 Windows",
+          "step0": "升級到 Windows 10 1809 或更新版本，或 Windows Server 2019 或更新版本。這些版本包含缺少的函式。"
+        },
+        "useOlderSdk": {
+          "title": "方案二：切換到舊版 SDK",
+          "step0": "在「相依性管理」中將 SDK 版本切換到 v0.2.112 或更早版本。較新的模型可能不接受這個舊版本。如果模型要求較新的 Claude Code，請改用其他模型或升級 Windows，因為更新 SDK 會讓這個錯誤再次出現。"
+        },
+        "checkCustomCli": {
+          "title": "方案三：檢查自訂的 Claude CLI",
+          "step0": "如果設定了「Claude CLI 路徑（覆寫）」，外掛會執行該程式而不是 SDK，切換 SDK 不會有任何效果。請清空該路徑，或改為指向舊版 Claude Code。如果 Windows 已是最新版本，請先檢查這一項。"
+        }
+      }
+    },
     "spawnEbusy": {
       "title": "spawn EBUSY — 子處理程序啟動失敗",
       "intro": "此錯誤通常由 Node.js 版本不相容或 SDK 安裝不完整引起，按以下兩個方向排查通常可解決：",
@@ -2178,6 +2650,38 @@
           "title": "方案二：用 npm 官方源重新安裝最新版 SDK",
           "step0": "1. 切換到 npm 官方源（淘寶源可能未同步最新版本，請勿使用淘寶源安裝）：",
           "step1": "2. 開啟「相依性管理」重新安裝最新版 SDK："
+        }
+      }
+    },
+    "codexCliVersionTooOld": {
+      "title": "Codex CLI 版本過低，不支援目前的權限模式",
+      "intro": "全自動和自動審批模式會用到自動審查器設定。目前的 Codex CLI 不認識這個設定並拒絕了請求，所以這則訊息沒有被處理。",
+      "reason": "外掛使用本機識別到的 Codex CLI，更新外掛不會同時更新 CLI。如果更新後仍然報錯，可能是 PATH 上還有一個更舊的 codex 排在前面。",
+      "solutions": {
+        "updateCodexCli": {
+          "title": "方案一：按官方說明安裝或更新 CLI",
+          "step0": "1. 開啟官方說明，選擇適合目前執行環境的獨立安裝器、npm 或 Homebrew。更新時沿用原安裝管道，不要對獨立安裝版執行 npm 解除安裝：",
+          "step1": "2. 在新終端機中確認版本已經更新，然後重新啟動 IDE，讓外掛換用新的 CLI："
+        },
+        "useDefaultMode": {
+          "title": "方案二：暫時切換權限模式",
+          "step0": "切換到預設模式。這個模式不使用自動審查器，可以在更新 CLI 之前繼續工作。如果仍然報錯，請按方案一更新 CLI。"
+        }
+      }
+    },
+    "codexCliAppServerTooOld": {
+      "title": "Codex CLI 版本過低，無法啟動",
+      "intro": "本機的 Codex CLI 能正常輸出版本號，但版本太舊，不認得外掛啟動 codex app-server 時傳入的 --listen 參數，所以一啟動就結束了。",
+      "reason": "外掛使用本機識別到的 Codex CLI，更新外掛不會同時更新 CLI。如果更新後仍然報錯，可能是 PATH 上還有一個更舊的 codex 排在前面。",
+      "solutions": {
+        "updateCodexCli": {
+          "title": "方案一：按官方說明安裝或更新 CLI",
+          "step0": "1. 開啟官方說明，選擇適合目前執行環境的獨立安裝器、npm 或 Homebrew。更新時沿用原安裝管道，不要對獨立安裝版執行 npm 解除安裝：",
+          "step1": "2. 在新終端機中確認版本已經更新，然後重新啟動 IDE，讓外掛換用新的 CLI："
+        },
+        "pointCodexBin": {
+          "title": "方案二：讓外掛指向可用的執行檔",
+          "step0": "列出 PATH 上所有的 codex（Windows 使用 where codex）。如果可用的那個不在最前面，請把 CODEX_BIN 環境變數設為它的完整路徑，然後重新啟動 IDE。外掛現在也會自動回退到後面可用的安裝。"
         }
       }
     },
@@ -2206,5 +2710,11 @@
       "executing": "執行中…",
       "adjust": "繼續調整"
     }
+  },
+  "sessionSupplier": {
+    "label": "供應商",
+    "choose": "請選擇供應商",
+    "nextTurn": "下一輪生效",
+    "unavailable": "供應商無法使用，請重新開啟選單重試或選擇其他供應商。"
   }
 }

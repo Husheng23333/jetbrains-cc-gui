@@ -1,8 +1,11 @@
 package com.github.claudecodegui.handler.history;
 
+import com.github.claudecodegui.util.ClaudeConfigDir;
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.handler.core.HandlerContext;
 import com.github.claudecodegui.provider.codex.CodexNativeHistoryReader;
+import com.github.claudecodegui.provider.gemini.GeminiHistoryReader;
+import com.github.claudecodegui.provider.gemini.GeminiSubagentHistoryLoader;
 import com.github.claudecodegui.util.PathUtils;
 import com.github.claudecodegui.util.JsUtils;
 import com.google.gson.Gson;
@@ -43,6 +46,10 @@ class SubagentHistoryService {
     // Explicit null retires the prior followup exclusion after a newer native turn appears.
     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
     private static final int MAX_JSONL_LINES = 50_000;
+    private static final int STATUS_PARALLELISM = 8;
+    private static final long STATUS_BATCH_TIMEOUT_MS = 10_000;
+    private static final java.util.concurrent.ExecutorService STATUS_EXECUTOR =
+            AppExecutorUtil.createBoundedApplicationPoolExecutor("Codex subagent status", STATUS_PARALLELISM);
     /**
      * How long a torn tail may sit unmodified before the writer is presumed gone.
      * A live writer completes a mid-append line within milliseconds; a line still
@@ -53,17 +60,26 @@ class SubagentHistoryService {
 
     private final HandlerContext context;
     private final CodexSubagentHistoryLoader codexLoader;
+    private final GeminiSubagentHistoryLoader geminiLoader;
     private final Set<String> inFlightCodexRequests = ConcurrentHashMap.newKeySet();
     private final Set<String> inFlightCodexStatusSessions = ConcurrentHashMap.newKeySet();
+    private final Set<String> inFlightGeminiStatusSessions = ConcurrentHashMap.newKeySet();
+    private final java.util.concurrent.atomic.AtomicInteger statusBatchOffset = new java.util.concurrent.atomic.AtomicInteger();
 
     SubagentHistoryService(HandlerContext context) {
         this(context, new CodexSubagentHistoryLoader(
-                Path.of(NodeDetector.resolveHomeForFileOps(), ".codex", "sessions")));
+                Path.of(NodeDetector.resolveHomeForFileOps(), ".codex", "sessions")),
+                new GeminiSubagentHistoryLoader(GeminiHistoryReader.defaultCliHome()));
     }
 
     SubagentHistoryService(HandlerContext context, CodexSubagentHistoryLoader codexLoader) {
+        this(context, codexLoader, new GeminiSubagentHistoryLoader(GeminiHistoryReader.defaultCliHome()));
+    }
+
+    SubagentHistoryService(HandlerContext context, CodexSubagentHistoryLoader codexLoader, GeminiSubagentHistoryLoader geminiLoader) {
         this.context = context;
         this.codexLoader = codexLoader;
+        this.geminiLoader = geminiLoader;
     }
 
     void handleLoadSubagentSession(String content) {
@@ -94,6 +110,10 @@ class SubagentHistoryService {
             this.loadCodexSubagentAsync(sessionId, toolUseId, agentPath, agentId, response);
             return;
         }
+        if ("gemini".equals(provider)) {
+            this.loadGeminiSubagentAsync(sessionId, toolUseId, agentId, response);
+            return;
+        }
         if (provider != null && !"claude".equals(provider)) {
             response.addProperty("success", false);
             response.addProperty("status", "error");
@@ -119,7 +139,10 @@ class SubagentHistoryService {
             String resolvedAgentId = extractAgentId(file);
             response.addProperty("agentId", resolvedAgentId);
 
-            JsonArray messages = readJsonl(file);
+            TranscriptRead transcript = readTranscript(file);
+            JsonArray messages = transcript.messages();
+            response.addProperty("truncated", transcript.omittedRecords() > 0);
+            response.addProperty("omittedRecords", transcript.omittedRecords());
             response.addProperty("success", true);
             response.addProperty("completed", hasCompleted(messages));
             response.addProperty("status", hasCompleted(messages) ? "completed" : "running");
@@ -143,6 +166,36 @@ class SubagentHistoryService {
         sendResponse(response);
     }
 
+    private void loadGeminiSubagentAsync(String sessionId, String toolUseId, String agentId, JsonObject response) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                GeminiSubagentHistoryLoader.SessionResult result = this.geminiLoader.loadChildSession(sessionId, toolUseId, agentId);
+                response.addProperty("success", result.success());
+                response.addProperty("status", result.status());
+                response.addProperty("completed", result.completed());
+                if (result.resultText() != null) {
+                    response.addProperty("resultText", result.resultText());
+                }
+                if (result.error() != null) {
+                    response.addProperty("error", result.error());
+                }
+                if (result.success() && result.messages() != null) {
+                    JsonArray messagesArray = new JsonArray();
+                    for (JsonObject msg : result.messages()) {
+                        messagesArray.add(msg);
+                    }
+                    response.add("messages", messagesArray);
+                }
+            } catch (Exception e) {
+                LOG.warn("[SubagentHistory] Failed to load Gemini subagent session: " + e.getMessage());
+                response.addProperty("success", false);
+                response.addProperty("status", "error");
+                response.addProperty("error", e.getMessage() != null ? e.getMessage() : "Unknown error");
+            }
+            this.sendResponse(response);
+        }, AppExecutorUtil.getAppExecutorService());
+    }
+
     void handleLoadSubagentStatuses(String content) {
         JsonObject response = new JsonObject();
         response.add("statuses", new JsonArray());
@@ -153,6 +206,7 @@ class SubagentHistoryService {
         List<CodexSubagentHistoryLoader.StatusRequest> agents;
         java.util.Map<String, String> nativeTasks = new java.util.HashMap<>();
         java.util.Map<String, String> previousTurns = new java.util.HashMap<>();
+        JsonArray agentArray = null;
         try {
             JsonObject request = parseRequest(content);
             sessionId = getString(request, "sessionId");
@@ -164,27 +218,31 @@ class SubagentHistoryService {
 
             validateId("sessionId", sessionId);
             validateRequestId(requestId);
-            if (!"codex".equals(provider)) {
+            if (!"codex".equals(provider) && !"gemini".equals(provider)) {
                 throw new IllegalArgumentException("Invalid provider");
             }
             if (!request.has("agents") || !request.get("agents").isJsonArray()) {
                 throw new IllegalArgumentException("Invalid agents");
             }
-            JsonArray agentArray = request.getAsJsonArray("agents");
-            if (agentArray.size() > CodexSubagentHistoryLoader.MAX_STATUS_REQUESTS) {
+            agentArray = request.getAsJsonArray("agents");
+            if (agentArray.size() > 64) {
                 throw new IllegalArgumentException("Too many agents");
             }
-            agents = parseStatusRequests(agentArray);
-            for (JsonElement element : agentArray) {
-                JsonObject agent = element.getAsJsonObject();
-                String nativeTask = getString(agent, "nativeTaskId");
-                if (nativeTask != null) {
-                    nativeTasks.put(getString(agent, "toolUseId"), nativeTask);
+            if ("codex".equals(provider)) {
+                agents = parseStatusRequests(agentArray);
+                for (JsonElement element : agentArray) {
+                    JsonObject agent = element.getAsJsonObject();
+                    String nativeTask = getString(agent, "nativeTaskId");
+                    if (nativeTask != null) {
+                        nativeTasks.put(getString(agent, "toolUseId"), nativeTask);
+                    }
+                    String previousTurn = getString(agent, "nativeTaskPreviousTurnId");
+                    if (previousTurn != null) {
+                        previousTurns.put(getString(agent, "toolUseId"), previousTurn);
+                    }
                 }
-                String previousTurn = getString(agent, "nativeTaskPreviousTurnId");
-                if (previousTurn != null) {
-                    previousTurns.put(getString(agent, "toolUseId"), previousTurn);
-                }
+            } else {
+                agents = List.of();
             }
         } catch (Exception e) {
             response.addProperty("success", false);
@@ -194,6 +252,56 @@ class SubagentHistoryService {
         }
 
         String responseSessionId = sessionId;
+        if ("gemini".equals(provider)) {
+            if (!this.inFlightGeminiStatusSessions.add(responseSessionId)) {
+                response.addProperty("success", false);
+                response.addProperty("error", "Gemini subagent status request already in progress");
+                sendStatusesResponse(response);
+                return;
+            }
+            List<GeminiSubagentHistoryLoader.StatusRequest> geminiRequests = new ArrayList<>();
+            for (JsonElement element : agentArray) {
+                if (element.isJsonObject()) {
+                    JsonObject agent = element.getAsJsonObject();
+                    geminiRequests.add(new GeminiSubagentHistoryLoader.StatusRequest(
+                            getString(agent, "toolUseId"),
+                            getString(agent, "agentId")
+                    ));
+                }
+            }
+            CompletableFuture.runAsync(() -> {
+                try {
+                    List<GeminiSubagentHistoryLoader.StatusResult> results = this.geminiLoader.loadStatuses(responseSessionId, geminiRequests);
+                    JsonArray statuses = new JsonArray();
+                    for (GeminiSubagentHistoryLoader.StatusResult res : results) {
+                        JsonObject st = new JsonObject();
+                        st.addProperty("toolUseId", res.toolUseId());
+                        st.addProperty("agentId", res.agentId());
+                        st.addProperty("success", res.success());
+                        st.addProperty("status", res.status());
+                        st.addProperty("completed", res.completed());
+                        if (res.resultText() != null) {
+                            st.addProperty("resultText", res.resultText());
+                        }
+                        if (res.error() != null) {
+                            st.addProperty("error", res.error());
+                        }
+                        statuses.add(st);
+                    }
+                    response.addProperty("success", true);
+                    response.add("statuses", statuses);
+                } catch (Exception e) {
+                    LOG.warn("[SubagentHistory] Failed to load Gemini subagent statuses: " + e.getMessage());
+                    response.addProperty("success", false);
+                    response.addProperty("error", e.getMessage() != null ? e.getMessage() : "Unknown error");
+                } finally {
+                    this.inFlightGeminiStatusSessions.remove(responseSessionId);
+                }
+                this.sendStatusesResponse(response);
+            }, AppExecutorUtil.getAppExecutorService());
+            return;
+        }
+
         if (!this.isCurrentCodexRoot(responseSessionId)) {
             return;
         }
@@ -205,23 +313,18 @@ class SubagentHistoryService {
         }
         CompletableFuture.runAsync(() -> {
             try {
-                JsonArray statuses = new JsonArray();
-                for (CodexSubagentHistoryLoader.StatusRequest agent : agents) {
+                JsonArray statuses = loadStatusBatch(agents, agent -> {
                     if (!this.isCurrentCodexRoot(responseSessionId)) {
-                        return;
+                        return pendingStatus(agent);
                     }
                     JsonObject nativeResult = this.readNativeSubagent(responseSessionId, agent.agentId(), false,
                             previousTurns.get(agent.toolUseId()));
                     if (nativeResult != null) {
-                        nativeResult.addProperty("toolUseId", agent.toolUseId());
-                        nativeResult.addProperty("agentPath", agent.agentPath());
-                        statuses.add(nativeResult);
-                    } else {
-                        for (CodexSubagentHistoryLoader.StatusResult result : this.codexLoader.loadStatuses(responseSessionId, List.of(agent))) {
-                            statuses.add(toJson(result));
-                        }
+                        return nativeResult;
                     }
-                }
+                    var offline = this.codexLoader.loadStatuses(responseSessionId, List.of(agent));
+                    return offline.isEmpty() ? pendingStatus(agent) : toJson(offline.get(0));
+                }, STATUS_BATCH_TIMEOUT_MS, statusBatchOffset.getAndAdd(STATUS_PARALLELISM));
                 response.addProperty("success", true);
                 for (JsonElement element : statuses) {
                     JsonObject status = element.getAsJsonObject();
@@ -242,6 +345,66 @@ class SubagentHistoryService {
                 this.sendStatusesResponse(response);
             }
         }, AppExecutorUtil.getAppExecutorService());
+    }
+
+    @FunctionalInterface
+    interface StatusReader {
+        JsonObject read(CodexSubagentHistoryLoader.StatusRequest agent) throws Exception;
+    }
+
+    /** Bound RPC fanout and the whole poll, retaining healthy siblings when one read fails. */
+    static JsonArray loadStatusBatch(List<CodexSubagentHistoryLoader.StatusRequest> agents,
+                                    StatusReader reader, long timeoutMillis, int offset) throws InterruptedException {
+        JsonArray statuses = new JsonArray();
+        if (agents.isEmpty()) {
+            return statuses;
+        }
+        List<java.util.concurrent.Callable<JsonObject>> work = new ArrayList<>(agents.size());
+        // Rotate the first wave so a handful of unresponsive children cannot starve later ones.
+        int start = Math.floorMod(offset, agents.size());
+        for (int i = 0; i < agents.size(); i++) {
+            var agent = agents.get((start + i) % agents.size());
+            work.add(() -> {
+                JsonObject status;
+                try {
+                    status = reader.read(agent);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return pendingStatus(agent);
+                } catch (java.util.concurrent.TimeoutException timeout) {
+                    return pendingStatus(agent);
+                } catch (Exception error) {
+                    status = pendingStatus(agent);
+                    status.addProperty("status", "error");
+                    status.addProperty("error", error.getMessage() != null ? error.getMessage() : "Status read failed");
+                }
+                status.addProperty("toolUseId", agent.toolUseId());
+                status.addProperty("agentPath", agent.agentPath());
+                return status;
+            });
+        }
+        var results = STATUS_EXECUTOR.invokeAll(work, timeoutMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+        for (int i = 0; i < results.size(); i++) {
+            var agent = agents.get((start + i) % agents.size());
+            try {
+                statuses.add(results.get(i).get());
+            } catch (java.util.concurrent.CancellationException | java.util.concurrent.ExecutionException error) {
+                // Poll timeout is not evidence that a native agent failed or completed.
+                statuses.add(pendingStatus(agent));
+            }
+        }
+        return statuses;
+    }
+
+    private static JsonObject pendingStatus(CodexSubagentHistoryLoader.StatusRequest agent) {
+        JsonObject status = new JsonObject();
+        status.addProperty("toolUseId", agent.toolUseId());
+        status.addProperty("agentPath", agent.agentPath());
+        status.addProperty("agentId", agent.agentId());
+        status.addProperty("success", false);
+        status.addProperty("completed", false);
+        status.addProperty("status", "running");
+        return status;
     }
 
     private static List<CodexSubagentHistoryLoader.StatusRequest> parseStatusRequests(JsonArray agents) {
@@ -354,10 +517,20 @@ class SubagentHistoryService {
         if (previousTurnId != null) {
             params.addProperty("nativeTaskPreviousTurnId", previousTurnId);
         }
-        JsonObject result = bridge.readCodexNative("codex.readSubagent", session == null ? "codex" : session.getChannelId(),
-                session == null ? this.context.getProject().getBasePath() : session.getCwd(), rootThreadId, params)
-                .get(125, java.util.concurrent.TimeUnit.SECONDS);
+        CompletableFuture<JsonObject> read = bridge.readCodexNative("codex.readSubagent",
+                session == null ? "codex" : session.getChannelId(),
+                session == null ? this.context.getProject().getBasePath() : session.getCwd(), rootThreadId, params);
+        JsonObject result;
+        try {
+            result = read.get(125, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException | java.util.concurrent.TimeoutException error) {
+            read.cancel(true);
+            throw error;
+        }
         if (result == null || result.has("error")) {
+            if (!includeHistory && result != null && "timeout".equals(getString(result, "errorCode"))) {
+                throw new java.util.concurrent.TimeoutException("Subagent status is still pending");
+            }
             String error = result == null ? "Native subagent returned no response" : getString(result, "error");
             if (CodexNativeHistoryReader.permitsOfflineFallback(error)) {
                 return null;
@@ -404,7 +577,7 @@ class SubagentHistoryService {
         validateId("agentId", agentId);
         List<String> projectKeys = projectKeys();
         for (String projectKey : projectKeys) {
-            Path file = Path.of(NodeDetector.resolveHomeForFileOps(), ".claude", "projects", projectKey)
+            Path file = ClaudeConfigDir.current().resolve("projects").resolve(projectKey)
                     .resolve(sessionId)
                     .resolve("subagents")
                     .resolve("agent-" + agentId + ".jsonl")
@@ -413,7 +586,7 @@ class SubagentHistoryService {
                 return file;
             }
         }
-        return Path.of(NodeDetector.resolveHomeForFileOps(), ".claude", "projects", projectKeys.get(0))
+        return ClaudeConfigDir.current().resolve("projects").resolve(projectKeys.get(0))
                 .resolve(sessionId)
                 .resolve("subagents")
                 .resolve("agent-" + agentId + ".jsonl")
@@ -427,7 +600,7 @@ class SubagentHistoryService {
 
         List<Path> subagentsDirs = new ArrayList<>();
         for (String projectKey : projectKeys()) {
-            Path subagentsDir = Path.of(NodeDetector.resolveHomeForFileOps(), ".claude", "projects", projectKey)
+            Path subagentsDir = ClaudeConfigDir.current().resolve("projects").resolve(projectKey)
                     .resolve(sessionId)
                     .resolve("subagents")
                     .normalize();
@@ -436,7 +609,7 @@ class SubagentHistoryService {
             }
         }
         if (subagentsDirs.isEmpty()) {
-            return Path.of(NodeDetector.resolveHomeForFileOps(), ".claude", "projects", projectKeys().get(0))
+            return ClaudeConfigDir.current().resolve("projects").resolve(projectKeys().get(0))
                     .resolve(sessionId)
                     .resolve("subagents")
                     .resolve("missing.jsonl");
@@ -537,11 +710,21 @@ class SubagentHistoryService {
      * without a HandlerContext.</p>
      *
      * @param file transcript to read
-     * @return the parsed records, capped at {@link #MAX_JSONL_LINES}
+     * @return the initial task prompt and latest records, capped at {@link #MAX_JSONL_LINES}
      * @throws IOException when the writer is still mid-append
      */
     static JsonArray readJsonl(Path file) throws IOException {
-        JsonArray messages = new JsonArray();
+        return readTranscript(file).messages();
+    }
+
+    /** A bounded transcript retains the original Task prompt and identifies omitted middle records. */
+    record TranscriptRead(JsonArray messages, long omittedRecords) { }
+
+    static TranscriptRead readTranscript(Path file) throws IOException {
+        java.util.ArrayDeque<JsonElement> recentRecords = new java.util.ArrayDeque<>();
+        JsonElement initialPrompt = null;
+        long initialPromptIndex = -1;
+        long parsedRecords = 0;
         // True while the most recent non-blank line failed to parse. A valid line
         // clears it, so this ends up describing the LAST non-blank line alone —
         // which is exactly what a torn tail is: only a malformed final line means
@@ -549,9 +732,10 @@ class SubagentHistoryService {
         // lines clears the flag and must not block reads forever, since retries
         // would re-read the same permanently damaged bytes.
         boolean tailMalformed = false;
-        int acceptedLines = 0;
-        // Streaming keeps memory flat for large subagent transcripts; every line still
-        // participates in the torn-tail check even after the accepted-lines cap.
+        // Retain the tail so long-running native workflows keep their newest output
+        // and terminal assistant message. A deque bounds memory without shifting
+        // 50,000 elements for every additional record. Every line still participates
+        // in the torn-tail check.
         // Decode with REPLACE, not Files.lines' REPORT: a mid-append read whose write
         // boundary splits a multi-byte UTF-8 character (CJK text, emoji) must degrade
         // to an unparseable last line — i.e. the torn-tail path below — instead of
@@ -567,16 +751,31 @@ class SubagentHistoryService {
                 try {
                     JsonElement parsed = JsonParser.parseString(line);
                     tailMalformed = false;
-                    if (acceptedLines < MAX_JSONL_LINES) {
-                        messages.add(parsed);
-                        acceptedLines++;
+                    if (initialPrompt == null && isInitialTaskPrompt(parsed)) {
+                        initialPrompt = parsed;
+                        initialPromptIndex = parsedRecords;
                     }
+                    parsedRecords++;
+                    if (recentRecords.size() == MAX_JSONL_LINES) {
+                        recentRecords.removeFirst();
+                    }
+                    recentRecords.addLast(parsed);
                 } catch (JsonSyntaxException e) {
                     tailMalformed = true;
                     LOG.warn("Malformed JSONL line in subagent history: " + e.getMessage());
                 }
             }
         }
+        boolean restoreInitialPrompt = initialPrompt != null && initialPromptIndex < parsedRecords - recentRecords.size();
+        if (restoreInitialPrompt && recentRecords.size() == MAX_JSONL_LINES) {
+            recentRecords.removeFirst();
+        }
+        JsonArray messages = new JsonArray(recentRecords.size());
+        if (restoreInitialPrompt) {
+            messages.add(initialPrompt);
+        }
+        recentRecords.forEach(messages::add);
+        TranscriptRead transcript = new TranscriptRead(messages, parsedRecords - messages.size());
         if (tailMalformed) {
             // A live writer finishes its mid-append line within milliseconds. If the
             // file has not changed beyond the grace window, the writer is gone and
@@ -584,12 +783,45 @@ class SubagentHistoryService {
             // corruption policy) instead of reporting "running" forever.
             if (isStaleTornTail(file)) {
                 LOG.warn("Serving subagent history with a permanently torn tail (writer inactive): " + file);
-                return messages;
+                return transcript;
             }
             throw new TranscriptIncompleteException(
                     "Subagent history is incomplete; retry after the history writer finishes");
         }
-        return messages;
+        return transcript;
+    }
+
+    private static boolean isInitialTaskPrompt(JsonElement record) {
+        if (!record.isJsonObject()) {
+            return false;
+        }
+        JsonObject object = record.getAsJsonObject();
+        if (!object.has("type") || !object.get("type").isJsonPrimitive()
+                || !"user".equals(object.get("type").getAsString())
+                || object.has("isMeta") && object.get("isMeta").isJsonPrimitive() && object.get("isMeta").getAsBoolean()
+                || !object.has("message") || !object.get("message").isJsonObject()) {
+            return false;
+        }
+        JsonElement content = object.getAsJsonObject("message").get("content");
+        if (content == null) {
+            return false;
+        }
+        if (content.isJsonPrimitive()) {
+            return content.getAsJsonPrimitive().isString() && !content.getAsString().isBlank();
+        }
+        if (content.isJsonArray()) {
+            for (JsonElement element : content.getAsJsonArray()) {
+                if (element.isJsonObject()) {
+                    JsonObject block = element.getAsJsonObject();
+                    if (block.has("type") && block.get("type").isJsonPrimitive()
+                            && "text".equals(block.get("type").getAsString()) && block.has("text")
+                            && block.get("text").isJsonPrimitive() && !block.get("text").getAsString().isBlank()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /**

@@ -30,6 +30,10 @@ interface BasicConfigSectionProps {
   onClaudeCliPathChange?: (path: string) => void;
   onSaveClaudeCliPath?: () => void;
   savingClaudeCliPath?: boolean;
+  claudeConfigDir?: string;
+  onClaudeConfigDirChange?: (path: string) => void;
+  onSaveClaudeConfigDir?: () => void;
+  savingClaudeConfigDir?: boolean;
   workingDirectory?: string;
   onWorkingDirectoryChange?: (dir: string) => void;
   onSaveWorkingDirectory?: () => void;
@@ -53,6 +57,11 @@ interface BasicConfigSectionProps {
   // Auto open file configuration
   autoOpenFileEnabled?: boolean;
   onAutoOpenFileEnabledChange?: (enabled: boolean) => void;
+  // Startup history loading configuration
+  loadHistoryOnStartup?: boolean;
+  onLoadHistoryOnStartupChange?: (enabled: boolean) => void;
+  historyLoadTimeoutSeconds?: number;
+  onHistoryLoadTimeoutChange?: (seconds: number) => void;
   // Send shortcut configuration
   sendShortcut?: 'enter' | 'cmdEnter';
   onSendShortcutChange?: (shortcut: 'enter' | 'cmdEnter') => void;
@@ -79,6 +88,8 @@ interface BasicConfigSectionProps {
   commitGenerationEnabled?: boolean;
   onCommitGenerationEnabledChange?: (enabled: boolean) => void;
   // Status bar widget configuration
+  sessionGitRepositoryMatchingEnabled?: boolean;
+  onSessionGitRepositoryMatchingEnabledChange?: (enabled: boolean) => void;
   statusBarWidgetEnabled?: boolean;
   onStatusBarWidgetEnabledChange?: (enabled: boolean) => void;
   // AI title generation configuration
@@ -175,6 +186,10 @@ const BasicConfigSection = (props: BasicConfigSectionProps) => {
           onStreamingEnabledChange={props.onStreamingEnabledChange}
           autoOpenFileEnabled={props.autoOpenFileEnabled}
           onAutoOpenFileEnabledChange={props.onAutoOpenFileEnabledChange}
+          loadHistoryOnStartup={props.loadHistoryOnStartup}
+          onLoadHistoryOnStartupChange={props.onLoadHistoryOnStartupChange}
+          historyLoadTimeoutSeconds={props.historyLoadTimeoutSeconds}
+          onHistoryLoadTimeoutChange={props.onHistoryLoadTimeoutChange}
           diffExpandedByDefault={props.diffExpandedByDefault}
           onDiffExpandedByDefaultChange={props.onDiffExpandedByDefaultChange}
           bashGroupCollapsedByDefault={props.bashGroupCollapsedByDefault}
@@ -183,6 +198,8 @@ const BasicConfigSection = (props: BasicConfigSectionProps) => {
           onEditGroupCollapsedByDefaultChange={props.onEditGroupCollapsedByDefaultChange}
           commitGenerationEnabled={props.commitGenerationEnabled}
           onCommitGenerationEnabledChange={props.onCommitGenerationEnabledChange}
+          sessionGitRepositoryMatchingEnabled={props.sessionGitRepositoryMatchingEnabled}
+          onSessionGitRepositoryMatchingEnabledChange={props.onSessionGitRepositoryMatchingEnabledChange}
           statusBarWidgetEnabled={props.statusBarWidgetEnabled}
           onStatusBarWidgetEnabledChange={props.onStatusBarWidgetEnabledChange}
           aiTitleGenerationEnabled={props.aiTitleGenerationEnabled}
@@ -227,6 +244,10 @@ const BasicConfigSection = (props: BasicConfigSectionProps) => {
           onClaudeCliPathChange={props.onClaudeCliPathChange}
           onSaveClaudeCliPath={props.onSaveClaudeCliPath}
           savingClaudeCliPath={props.savingClaudeCliPath}
+          claudeConfigDir={props.claudeConfigDir}
+          onClaudeConfigDirChange={props.onClaudeConfigDirChange}
+          onSaveClaudeConfigDir={props.onSaveClaudeConfigDir}
+          savingClaudeConfigDir={props.savingClaudeConfigDir}
           workingDirectory={props.workingDirectory}
           onWorkingDirectoryChange={props.onWorkingDirectoryChange}
           onSaveWorkingDirectory={props.onSaveWorkingDirectory}

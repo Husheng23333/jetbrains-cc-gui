@@ -6,13 +6,34 @@ import { getSkipNewSessionConfirm } from '../utils/skipNewSessionConfirm';
 import { clearAllPersistedExpanded } from '../utils/expandedState';
 import { normalizeClaudeModelForBridge } from '../utils/customClaudeModels';
 import { sumKnownHistoryMessages } from '../utils/historyMessageCount';
+import { getSessionTransitionPending, getSessionTransitionToken, isRetiredSessionTransitionToken,
+  isSessionTransitionRetryable, markSessionTransitionTimedOut, prepareSessionTransition,
+  acknowledgeSessionTransition, isSessionTransitionAcknowledged, retireSessionTransitionToken } from '../utils/sessionTransitionState';
+import { releaseSessionTransition } from './windowCallbacks/sessionTransition';
 
 type ViewMode = 'chat' | 'history' | 'settings';
 
 type ToastType = 'info' | 'success' | 'warning' | 'error';
 
+/** Payload of window.onHistoryDeleteResult, sent once per delete request. */
+interface HistoryDeleteResult {
+  requestId?: string;
+  provider?: string;
+  sessionIds?: string[];
+  deletedSessionIds?: string[];
+  success?: boolean;
+  errorCode?: string;
+}
+
+const createDeletionRequestId = () =>
+  `delete-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
 const createSessionTransitionToken = () =>
   `transition-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+// Backend title regeneration times out after 90s; this fallback clears the
+// spinner state a bit later so the UI never gets stuck without a result.
+const TITLE_REGENERATION_TIMEOUT_MS = 100000;
 
 interface UseSessionManagementOptions {
   messages: ClaudeMessage[];
@@ -22,6 +43,8 @@ interface UseSessionManagementOptions {
   currentSessionIdRef?: React.MutableRefObject<string | null>;
   currentProvider?: string;
   setHistoryData: React.Dispatch<React.SetStateAction<HistoryData | null>>;
+  /** Shared AI-title regeneration spinners (history list + chat header refresh buttons). */
+  setRegeneratingTitleSessionIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   setMessages: React.Dispatch<React.SetStateAction<ClaudeMessage[]>>;
   setCurrentView: (view: ViewMode) => void;
   setCurrentSessionId: (id: string | null) => void;
@@ -59,7 +82,7 @@ interface UseSessionManagementReturn {
   suppressNextStatusToastRef: React.MutableRefObject<boolean>;
   createNewSession: () => void;
   forceCreateNewSession: () => void;
-  forceCreateNewSessionWithProvider: (providerId: string) => void;
+  forceCreateNewSessionWithProvider: (providerId: string, onAccepted?: () => void) => void;
   handleConfirmNewSession: () => void;
   handleCancelNewSession: () => void;
   handleConfirmInterrupt: () => void;
@@ -71,6 +94,9 @@ interface UseSessionManagementReturn {
   toggleFavoriteSession: (sessionId: string) => void;
   updateHistoryTitle: (sessionId: string, newTitle: string) => void;
   applyHistoryTitleLocal: (sessionId: string, newTitle: string) => void;
+  regenerateHistoryTitle: (sessionId: string) => void;
+  /** Ends an in-flight regeneration (clears spinner state + fallback timer). */
+  settleTitleRegeneration: (sessionId: string) => void;
   convertToCliSession: (sessionId: string) => void;
 }
 
@@ -85,6 +111,7 @@ export function useSessionManagement({
   currentSessionIdRef,
   currentProvider,
   setHistoryData,
+  setRegeneratingTitleSessionIds,
   setMessages,
   setCurrentView,
   setCurrentSessionId,
@@ -122,80 +149,220 @@ export function useSessionManagement({
     addToast(toast.message, toast.type);
   }, [addToast, t]);
 
-  const beginSessionTransition = useCallback((nextSessionId: string | null, nextTitle: string | null) => {
+  const beginSessionTransition = useCallback((nextSessionId: string | null, nextTitle: string | null,
+    applyTarget?: () => void, backendToken?: string, waitForDeletion = false) => {
+    if (getSessionTransitionPending() && !backendToken && !isSessionTransitionRetryable()) {
+      addToast(t('chat.sessionTransitionInProgress', {
+        defaultValue: 'A session change is already in progress. Please wait a moment.',
+      }), 'info');
+      return false;
+    }
     window.__sessionTransitioning = true;
-    window.__sessionTransitionToken = createSessionTransitionToken();
+    window.__sessionTransitionToken = backendToken || createSessionTransitionToken();
     // Discard any deferred snapshot from a prior transition / outgoing session.
     window.__deferredTransitionUpdateMessages = null;
-    // Clear expand/collapse cache on session switch to avoid unbounded growth
-    clearAllPersistedExpanded();
-    // Use the single cleanup entry point exposed by useWindowCallbacks.
-    // This clears both React state AND internal streaming refs in one shot.
-    if (typeof window.__resetTransientUiState === 'function') {
-      window.__resetTransientUiState();
-    } else {
-      // Fallback if useWindowCallbacks hasn't mounted yet (e.g. during SSR/tests)
-      clearToasts();
-      setStatus('');
-      setLoadingState(false);
-      setIsThinking(false);
-      setStreamingActive(false);
-    }
-    setMessages([]);
-    // Queued messages were typed against the outgoing session — dropping them
-    // here keeps them from firing into the freshly opened one. The reset via
-    // window.__resetTransientUiState above already clears the queue too (it
-    // also covers the Java-driven clearMessages path); this explicit call only
-    // guards the fallback branch where that global isn't registered yet.
-    // A plain interrupt (no transition) intentionally keeps the queue so the
-    // pending messages still get sent once the turn ends.
-    if (clearQueuedMessages) {
-      clearQueuedMessages();
-    }
-    // Drop async subagent events from the prior session: tool_use_ids are
-    // globally unique so stale entries cannot mislabel the new session's
-    // agents, but leaving them would grow the map without bound.
-    if (setTaskEvents) {
-      setTaskEvents({});
-    }
-    // Sidechain histories carry full transcript arrays (potentially large).
-    // Clear them on session switch for the same unbounded-growth reason; an
-    // expanded card will re-fetch the sidechain it actually needs via polling.
-    if (setSubagentHistories) {
-      setSubagentHistories({});
-    }
-    if (currentSessionIdRef) {
-      currentSessionIdRef.current = nextSessionId;
-    }
-    setCurrentSessionId(nextSessionId);
-    setCustomSessionTitle(nextTitle);
-    setUsagePercentage(0);
-    setUsageUsedTokens(undefined);
-    setUsageMaxTokens(undefined);
+    // Keep the old conversation and queued drafts until Java confirms that
+    // retiring its runtime succeeded. Failure must not leave an empty old chat.
+    prepareSessionTransition(nextSessionId, () => {
+      // Clear expand/collapse cache on session switch to avoid unbounded growth
+      clearAllPersistedExpanded();
+      // Use the single cleanup entry point exposed by useWindowCallbacks.
+      // This clears both React state AND internal streaming refs in one shot.
+      if (typeof window.__resetTransientUiState === 'function') {
+        window.__resetTransientUiState();
+      } else {
+        // Fallback if useWindowCallbacks hasn't mounted yet (e.g. during SSR/tests)
+        clearToasts();
+        setStatus('');
+        setLoadingState(false);
+        setIsThinking(false);
+        setStreamingActive(false);
+      }
+      setMessages([]);
+      // Queued messages were typed against the outgoing session — dropping them
+      // here keeps them from firing into the freshly opened one. The reset via
+      // window.__resetTransientUiState above already clears the queue too (it
+      // also covers the Java-driven clearMessages path); this explicit call only
+      // guards the fallback branch where that global isn't registered yet.
+      // A plain interrupt (no transition) intentionally keeps the queue so the
+      // pending messages still get sent once the turn ends.
+      if (clearQueuedMessages) {
+        clearQueuedMessages();
+      }
+      // Drop async subagent events from the prior session: tool_use_ids are
+      // globally unique so stale entries cannot mislabel the new session's
+      // agents, but leaving them would grow the map without bound.
+      if (setTaskEvents) {
+        setTaskEvents({});
+      }
+      // Sidechain histories carry full transcript arrays (potentially large).
+      // Clear them on session switch for the same unbounded-growth reason; an
+      // expanded card will re-fetch the sidechain it actually needs via polling.
+      if (setSubagentHistories) {
+        setSubagentHistories({});
+      }
+      if (currentSessionIdRef) {
+        currentSessionIdRef.current = nextSessionId;
+      }
+      setCurrentSessionId(nextSessionId);
+      setCustomSessionTitle(nextTitle);
+      setUsagePercentage(0);
+      setUsageUsedTokens(undefined);
+      setUsageMaxTokens(undefined);
+      applyTarget?.();
+    }, window.__sessionTransitionToken);
 
-    // FIX: Safety timeout to auto-release the session transition guard.
-    // If the backend's historyLoadComplete signal is lost (e.g., JCEF IPC failure
-    // during webview reload, or a backend error that prevents the callback),
-    // __sessionTransitioning would remain true permanently, silently dropping ALL
-    // message callbacks (updateMessages, onContentDelta, onStreamStart, etc.).
-    // This makes the webview appear "dead" while the backend continues working.
+    // A slow/missing reply is not evidence that Java abandoned this swap. Keep
+    // the queue barrier, but let an explicit retry supersede this generation.
     if (transitionTimeoutRef.current !== null) {
       clearTimeout(transitionTimeoutRef.current);
+      transitionTimeoutRef.current = null;
+    }
+    // A deletion owns the writer barrier until its explicit outcome. Its timer
+    // only lets a new session supersede the hold; queued writes stay paused.
+    if (waitForDeletion) {
+      // This is only a writer hold; deletion has its own result callback and
+      // does not issue a lifecycle Started acknowledgement.
+      acknowledgeSessionTransition(window.__sessionTransitionToken);
     }
     const token = window.__sessionTransitionToken;
     transitionTimeoutRef.current = setTimeout(() => {
       transitionTimeoutRef.current = null;
       if (window.__sessionTransitioning && window.__sessionTransitionToken === token) {
-        console.warn('[SessionManagement] Transition guard timed out — auto-releasing');
-        window.__sessionTransitioning = false;
-        window.__sessionTransitionToken = null;
-        // Apply any history snapshot that arrived while the guard was stuck.
-        if (typeof window.__flushDeferredTransitionUpdateMessages === 'function') {
-          window.__flushDeferredTransitionUpdateMessages();
-        }
+        markSessionTransitionTimedOut(token ?? undefined);
+        addToast(t('chat.sessionTransitionTakingLonger', {
+          defaultValue: 'The session change is taking longer than expected. You can try opening it again; queued messages are paused.',
+        }), 'info');
       }
     }, 15_000); // 15 seconds — generous enough for slow history loads
-  }, [clearToasts, currentSessionIdRef, setStatus, setLoadingState, setIsThinking, setStreamingActive, setMessages, setCurrentSessionId, setCustomSessionTitle, setUsagePercentage, setUsageUsedTokens, setUsageMaxTokens, setTaskEvents, setSubagentHistories, clearQueuedMessages]);
+    return true;
+  }, [addToast, t, clearToasts, currentSessionIdRef, setStatus, setLoadingState, setIsThinking, setStreamingActive, setMessages, setCurrentSessionId, setCustomSessionTitle, setUsagePercentage, setUsageUsedTokens, setUsageMaxTokens, setTaskEvents, setSubagentHistories, clearQueuedMessages]);
+
+  useEffect(() => () => {
+    if (transitionTimeoutRef.current !== null) clearTimeout(transitionTimeoutRef.current);
+    releaseSessionTransition(false, getSessionTransitionToken() ?? undefined);
+  }, []);
+
+  useEffect(() => {
+    const onStarted = (nextId: string, title: string, token?: string) => {
+      if (!token || isRetiredSessionTransitionToken(token)) return;
+      if (getSessionTransitionToken() === token) {
+        acknowledgeSessionTransition(token);
+        return;
+      }
+      // Requests initiated in this webview already installed their transaction.
+      // An unknown frontend token is a late reply, not a new IDE action.
+      if (!token.startsWith('backend:')) return;
+      // Java queues Started at generation acceptance, before cleanup. Until
+      // our own request is acknowledged, an earlier queued IDE Started cannot
+      // supersede the user's newer local intent. Subsequent IDE actions arrive
+      // after that acknowledgement and can legitimately take ownership.
+      if (getSessionTransitionPending() && !isSessionTransitionAcknowledged()) {
+        retireSessionTransitionToken(token);
+        return;
+      }
+      beginSessionTransition(nextId || null, title || null, undefined, token);
+    };
+    window.sessionTransitionStarted = onStarted;
+    return () => { if (window.sessionTransitionStarted === onStarted) delete window.sessionTransitionStarted; };
+  }, [beginSessionTransition]);
+
+  const dispatchTransition = useCallback((type: 'create_new_session' | 'load_session', payload: Record<string, unknown> = {}) => {
+    const token = getSessionTransitionToken();
+    const sent = sendBridgeEvent(type, JSON.stringify({ ...payload, ...(token ? { transitionToken: token } : {}) }));
+    if (!sent) {
+      const error = t('chat.bridgeUnavailable', { defaultValue: 'Bridge is not available right now' });
+      if (window.sessionTransitionFailed) window.sessionTransitionFailed(error, token ?? undefined);
+      else { releaseSessionTransition(false, token ?? undefined); addToast(error, 'error'); }
+    }
+    return sent;
+  }, [addToast, t]);
+
+  // Codex keeps a persistent native writer. The backend may refuse an in-use
+  // thread, and an optimistic new session would force-release the very work
+  // that refusal protects, so Codex leaves a deleted session only once the
+  // backend reports that its files are gone.
+  const awaitsDeletionResult = currentProvider === 'codex' || currentProvider === 'claude';
+  /** Each current-session deletion holds its queue barrier through the outcome. */
+  const pendingDeletionsRef = useRef(new Map<string, { provider?: string; transitionToken?: string }>());
+  const localSessionIdRef = useRef(currentSessionId);
+  useEffect(() => {
+    localSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
+
+  /** Send a delete request; returns false when the bridge refused it. */
+  const requestHistoryDeletion = useCallback((type: 'delete_session' | 'delete_sessions', sessionIds: string[]) => {
+    const requestId = createDeletionRequestId();
+    const activeId = (currentSessionIdRef ?? localSessionIdRef).current;
+    const pauseCurrent = awaitsDeletionResult && !!activeId && sessionIds.includes(activeId);
+    if (pauseCurrent && !beginSessionTransition(null, null, undefined, undefined, true)) return false;
+    const transitionToken = pauseCurrent ? getSessionTransitionToken() ?? undefined : undefined;
+    // The provider travels with the request: native Codex history never tells
+    // the backend which history view is open.
+    const payload = type === 'delete_session'
+      ? { sessionId: sessionIds[0], provider: currentProvider, requestId }
+      : { sessionIds, provider: currentProvider, requestId };
+    pendingDeletionsRef.current.set(requestId, { provider: currentProvider, transitionToken });
+    if (sendBridgeEvent(type, JSON.stringify(payload))) {
+      return true;
+    }
+    pendingDeletionsRef.current.delete(requestId);
+    if (transitionToken) releaseSessionTransition(false, transitionToken);
+    addToast(t('history.deleteFailed'), 'error');
+    return false;
+  }, [addToast, currentProvider, currentSessionIdRef, awaitsDeletionResult, beginSessionTransition, t]);
+
+  const handleHistoryDeleteResult = useCallback((json: string) => {
+    let result: HistoryDeleteResult;
+    try {
+      result = JSON.parse(json) as HistoryDeleteResult;
+    } catch {
+      return;
+    }
+    const requestId = result && typeof result === 'object' ? result.requestId : undefined;
+    // Only this window's own pending requests may leave the session or announce an outcome.
+    if (!requestId || !pendingDeletionsRef.current.has(requestId)) return;
+    const pendingDeletion = pendingDeletionsRef.current.get(requestId)!;
+    const awaited = ['codex', 'claude'].includes(pendingDeletion.provider ?? '');
+    pendingDeletionsRef.current.delete(requestId);
+
+    const deleted = Array.isArray(result.deletedSessionIds) ? result.deletedSessionIds : [];
+    const activeSessionId = (currentSessionIdRef ?? localSessionIdRef).current;
+    const removedCurrent = awaited && activeSessionId != null && deleted.includes(activeSessionId);
+    if (removedCurrent) {
+      // Continue this deletion's barrier into the new-session transaction.
+      // A later IDE action may already own another transition; never replace it.
+      if (pendingDeletion.transitionToken && getSessionTransitionToken() !== pendingDeletion.transitionToken) return;
+      if (!beginSessionTransition(null, null, undefined, pendingDeletion.transitionToken)) return;
+      suppressNextStatusToastRef.current = true;
+      dispatchTransition('create_new_session');
+    } else if (pendingDeletion.transitionToken) {
+      releaseSessionTransition(false, pendingDeletion.transitionToken);
+    }
+    if (result.success) {
+      // Other providers already left the session and announced it optimistically.
+      if (awaited) showSessionDeletedToast(removedCurrent);
+      return;
+    }
+    // The backend reloaded history, restoring the rows that were removed optimistically.
+    const inUse = result.errorCode === 'SESSION_RUNNING';
+    const toast = { message: t(inUse ? 'history.sessionInUse' : 'history.deleteFailed'),
+      type: inUse ? 'warning' as const : 'error' as const };
+    if (removedCurrent) {
+      window.__pendingSessionTransitionToast = toast;
+    } else {
+      addToast(toast.message, toast.type);
+    }
+  }, [addToast, beginSessionTransition, currentSessionIdRef, showSessionDeletedToast, t, dispatchTransition]);
+
+  useEffect(() => {
+    window.onHistoryDeleteResult = handleHistoryDeleteResult;
+    return () => {
+      if (window.onHistoryDeleteResult === handleHistoryDeleteResult) {
+        window.onHistoryDeleteResult = undefined;
+      }
+    };
+  }, [handleHistoryDeleteResult]);
 
   // Create new session
   const createNewSession = useCallback(() => {
@@ -213,8 +380,8 @@ export function useSessionManagement({
       // proceed directly. Preference is read fresh each call so the setting
       // page toggle takes effect immediately.
       if (getSkipNewSessionConfirm()) {
-        beginSessionTransition(null, null);
-        sendBridgeEvent('create_new_session');
+        if (!beginSessionTransition(null, null)) return;
+        dispatchTransition('create_new_session');
         return;
       }
       // If there are messages but not loading, show new session confirmation
@@ -222,40 +389,30 @@ export function useSessionManagement({
       setShowNewSessionConfirm(true);
     } else {
       // If empty and not loading, directly create new session
-      beginSessionTransition(null, null);
-      sendBridgeEvent('create_new_session');
+      if (!beginSessionTransition(null, null)) return;
+      dispatchTransition('create_new_session');
     }
-  }, [beginSessionTransition, messages.length, loading]);
+  }, [beginSessionTransition, messages.length, loading, dispatchTransition]);
 
   // Force create new session (no confirmation, used by /clear /new /reset commands)
   const forceCreateNewSession = useCallback(() => {
-    if (loading) {
-      sendBridgeEvent('interrupt_session');
-    }
-    beginSessionTransition(null, null);
-    sendBridgeEvent('create_new_session');
-  }, [beginSessionTransition, loading]);
+    if (!beginSessionTransition(null, null)) return;
+    dispatchTransition('create_new_session');
+  }, [beginSessionTransition, loading, dispatchTransition]);
 
-  const forceCreateNewSessionWithProvider = useCallback((providerId: string) => {
-    if (loading) {
-      sendBridgeEvent('interrupt_session');
-    }
-    beginSessionTransition(null, null);
-    sendBridgeEvent('set_provider', providerId);
-    sendBridgeEvent('create_new_session');
-  }, [beginSessionTransition, loading]);
+  const forceCreateNewSessionWithProvider = useCallback((providerId: string, onAccepted?: () => void) => {
+    if (!beginSessionTransition(null, null, onAccepted)) return;
+    dispatchTransition('create_new_session', { provider: providerId });
+  }, [beginSessionTransition, loading, dispatchTransition]);
 
   // Confirm new session
   const handleConfirmNewSession = useCallback(() => {
     setShowNewSessionConfirm(false);
     // [FIX] Safety check: if loading started while dialog was open, send interrupt first
-    if (loading) {
-      sendBridgeEvent('interrupt_session');
-    }
-    beginSessionTransition(null, null);
-    sendBridgeEvent('create_new_session');
+    if (!beginSessionTransition(null, null)) return;
+    dispatchTransition('create_new_session');
     pendingActionRef.current = null;
-  }, [beginSessionTransition, loading]);
+  }, [beginSessionTransition, loading, dispatchTransition]);
 
   // Cancel new session
   const handleCancelNewSession = useCallback(() => {
@@ -266,12 +423,11 @@ export function useSessionManagement({
   // Confirm interrupt
   const handleConfirmInterrupt = useCallback(() => {
     setShowInterruptConfirm(false);
-    // Send interrupt signal and create new session
-    sendBridgeEvent('interrupt_session');
-    beginSessionTransition(null, null);
-    sendBridgeEvent('create_new_session');
+    // The backend transition owns interruption and resource release.
+    if (!beginSessionTransition(null, null)) return;
+    dispatchTransition('create_new_session');
     pendingActionRef.current = null;
-  }, [beginSessionTransition]);
+  }, [beginSessionTransition, dispatchTransition]);
 
   // Cancel interrupt
   const handleCancelInterrupt = useCallback(() => {
@@ -291,11 +447,11 @@ export function useSessionManagement({
     const effectiveModel = (model || session?.model || '').trim();
     const effectiveAgent = (agent || session?.agent || '').trim();
 
-    // Restore the session's model/agent in the UI before (or with) the load so
-    // the next send continues with the same selection the history used.
-    if (effectiveModel && applyHistoryModel) {
-      applyHistoryModel(effectiveProvider, effectiveModel, effectiveAgent || null);
-    }
+    const applyTargetModel = () => {
+      if (effectiveModel && applyHistoryModel) {
+        applyHistoryModel(effectiveProvider, effectiveModel, effectiveAgent || null);
+      }
+    };
 
     // Java stores the payload model verbatim, so normalize it here where the
     // custom model list lives: custom ids stay untouched, retired built-in ids
@@ -306,12 +462,12 @@ export function useSessionManagement({
 
     // Re-opening the session already active: soft-reload only — do NOT
     // beginSessionTransition (which clears messages and holds the transition
-    // guard). Backend routes same-session to reloadActiveSessionMessages.
-    // Codex still uses a full transition: its loadCodexSession path is separate
-    // and mid-stream soft-reload without interrupt can clearMessages under the
-    // live reply.
+    // guard). The backend routes same-session (Claude and Codex alike) to the
+    // in-place transcript refresh, which defers while a turn streams instead
+    // of clearing the page under the live reply.
     const isSameSession = sessionId === currentSessionId;
-    if (isSameSession && effectiveProvider !== 'codex') {
+    if (isSameSession && !getSessionTransitionPending()) {
+      applyTargetModel();
       sendBridgeEvent('load_session', JSON.stringify({
         sessionId,
         provider: effectiveProvider,
@@ -321,24 +477,20 @@ export function useSessionManagement({
       return;
     }
 
-    // Switching to a different session (or Codex same-session): interrupt first
+    // Switching to a different session: interrupt first
     // if the AI is mid-reply, then do a full session swap.
-    if (loading) {
-      sendBridgeEvent('interrupt_session');
-    }
-    beginSessionTransition(sessionId, session?.title ?? null);
-    sendBridgeEvent('load_session', JSON.stringify({
+    if (!beginSessionTransition(sessionId, session?.title ?? null, applyTargetModel)) return;
+    dispatchTransition('load_session', {
       sessionId,
       provider: effectiveProvider,
       ...(bridgeModel ? { model: bridgeModel } : {}),
-    }));
+    });
     setCurrentView('chat');
-  }, [applyHistoryModel, beginSessionTransition, currentProvider, loading, setCurrentView, currentSessionId]);
+  }, [applyHistoryModel, beginSessionTransition, currentProvider, loading, setCurrentView, currentSessionId, dispatchTransition]);
 
   // Delete history session
   const deleteHistorySession = useCallback((sessionId: string) => {
-    // Send delete request to Java backend
-    sendBridgeEvent('delete_session', sessionId);
+    if (!requestHistoryDeletion('delete_session', [sessionId])) return;
     let startedSessionTransition = false;
 
     // Immediately update frontend state, remove session from history list
@@ -358,22 +510,22 @@ export function useSessionManagement({
         };
       });
 
-      // If deleted session is current session, clear messages and reset state
-      if (sessionId === currentSessionId) {
+      // If deleted session is current session, clear messages and reset state.
+      // Codex waits for onHistoryDeleteResult instead.
+      if (sessionId === currentSessionId && !awaitsDeletionResult) {
         // [FIX] Send interrupt signal if AI is responding
-        if (loading) {
-          sendBridgeEvent('interrupt_session');
-        }
-        beginSessionTransition(null, null);
+        if (!beginSessionTransition(null, null)) return;
         startedSessionTransition = true;
         // Set flag to suppress next updateStatus toast
         suppressNextStatusToastRef.current = true;
-        sendBridgeEvent('create_new_session');
+        dispatchTransition('create_new_session');
       }
 
     }
-    showSessionDeletedToast(startedSessionTransition);
-  }, [historyData, currentSessionId, loading, setHistoryData, setMessages, setCurrentSessionId, setCustomSessionTitle, setUsagePercentage, setUsageUsedTokens, showSessionDeletedToast]);
+    if (!awaitsDeletionResult) {
+      showSessionDeletedToast(startedSessionTransition);
+    }
+  }, [historyData, currentSessionId, awaitsDeletionResult, requestHistoryDeletion, setHistoryData, beginSessionTransition, dispatchTransition, showSessionDeletedToast]);
 
   // Batch delete history sessions
   const deleteHistorySessions = useCallback((sessionIds: string[]) => {
@@ -382,7 +534,7 @@ export function useSessionManagement({
       return;
     }
 
-    sendBridgeEvent('delete_sessions', JSON.stringify(uniqueSessionIds));
+    if (!requestHistoryDeletion('delete_sessions', uniqueSessionIds)) return;
     let startedSessionTransition = false;
 
     if (historyData && historyData.sessions) {
@@ -405,19 +557,18 @@ export function useSessionManagement({
         };
       });
 
-      if (currentSessionId && deletedSessionIds.has(currentSessionId)) {
-        if (loading) {
-          sendBridgeEvent('interrupt_session');
-        }
-        beginSessionTransition(null, null);
+      if (currentSessionId && deletedSessionIds.has(currentSessionId) && !awaitsDeletionResult) {
+        if (!beginSessionTransition(null, null)) return;
         startedSessionTransition = true;
         suppressNextStatusToastRef.current = true;
-        sendBridgeEvent('create_new_session');
+        dispatchTransition('create_new_session');
       }
 
     }
-    showSessionDeletedToast(startedSessionTransition);
-  }, [historyData, currentSessionId, loading, setHistoryData, beginSessionTransition, showSessionDeletedToast]);
+    if (!awaitsDeletionResult) {
+      showSessionDeletedToast(startedSessionTransition);
+    }
+  }, [historyData, currentSessionId, loading, awaitsDeletionResult, requestHistoryDeletion, setHistoryData, beginSessionTransition, showSessionDeletedToast, dispatchTransition]);
 
   // Export history session
   const exportHistorySession = useCallback((sessionId: string, title: string) => {
@@ -464,17 +615,28 @@ export function useSessionManagement({
     const updateData = JSON.stringify({ sessionId, customTitle: newTitle });
     sendBridgeEvent('update_title', updateData);
 
-    // Immediately update frontend state
+    // The chat header derives its title from customSessionTitle, which only the
+    // header editor used to update. Retitle the session on screen when the edit
+    // comes from the history list.
+    if (sessionId === currentSessionId) {
+      setCustomSessionTitle(newTitle);
+    }
+
+    // Immediately update frontend state. Marking hasCustomTitle here hides the
+    // refresh-title buttons right away (a manual title now wins over any AI
+    // title), matching what HistoryLoadService reports after the next reload.
     if (historyData && historyData.sessions) {
       setHistoryData(previous => previous?.sessions ? {
         ...previous,
-        sessions: previous.sessions.map(session => session.sessionId === sessionId ? { ...session, title: newTitle } : session),
+        sessions: previous.sessions.map(session => session.sessionId === sessionId
+          ? { ...session, title: newTitle, hasCustomTitle: true }
+          : session),
       } : previous);
 
       // Show success toast
       addToast(t('history.titleUpdated'), 'success');
     }
-  }, [historyData, setHistoryData, addToast, t]);
+  }, [historyData, setHistoryData, addToast, t, currentSessionId, setCustomSessionTitle]);
 
   // AI-generated titles are already persisted by saveAiTitle to the JSONL
   // session file. This skips the round-trip through the customTitle endpoint,
@@ -485,6 +647,63 @@ export function useSessionManagement({
       sessions: previous.sessions.map(session => session.sessionId === sessionId ? { ...session, title: newTitle } : session),
     } : previous);
   }, [setHistoryData]);
+
+  // Request AI regeneration of a session title from its conversation content.
+  // The backend relays the outcome via window.onTitleRegenerated (registered
+  // once in sessionCallbacks), which applies the new title, clears the shared
+  // spinner state, and shows the result toast.
+  // Safety net: if the backend never answers (daemon lost, callback dropped),
+  // the fallback timer removes the spinner so it cannot spin forever. The
+  // backend timeout (90s) plus relay margin fits comfortably below it.
+  const titleRegenerationTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  useEffect(() => {
+    const timers = titleRegenerationTimeoutsRef.current;
+    return () => {
+      for (const timer of timers.values()) {
+        clearTimeout(timer);
+      }
+      timers.clear();
+    };
+  }, []);
+
+  // Clears the in-flight bookkeeping (timeout map + spinner set) when the
+  // result callback arrives. The fallback timer calls the same cleanup, so
+  // both completion paths keep the map and set in agreement.
+  const settleTitleRegeneration = useCallback((sessionId: string) => {
+    const timer = titleRegenerationTimeoutsRef.current.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      titleRegenerationTimeoutsRef.current.delete(sessionId);
+    }
+    setRegeneratingTitleSessionIds(prev => {
+      if (!prev.has(sessionId)) return prev;
+      const next = new Set(prev);
+      next.delete(sessionId);
+      return next;
+    });
+  }, [setRegeneratingTitleSessionIds]);
+
+  const regenerateHistoryTitle = useCallback((sessionId: string) => {
+    // The timeout map is the source of truth for in-flight regenerations: an
+    // entry exists until the result callback (or the fallback timer) removes
+    // it, so a second trigger while one is running is a no-op.
+    if (titleRegenerationTimeoutsRef.current.has(sessionId)) return;
+
+    setRegeneratingTitleSessionIds(prev => new Set(prev).add(sessionId));
+    const timer = setTimeout(() => {
+      titleRegenerationTimeoutsRef.current.delete(sessionId);
+      setRegeneratingTitleSessionIds(prev => {
+        if (!prev.has(sessionId)) return prev;
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
+      addToast(t('history.titleRegenerateFailed.generic'), 'error');
+    }, TITLE_REGENERATION_TIMEOUT_MS);
+    titleRegenerationTimeoutsRef.current.set(sessionId, timer);
+
+    sendBridgeEvent('regenerate_session_title', JSON.stringify({ sessionId }));
+  }, [setRegeneratingTitleSessionIds, addToast, t]);
 
   // Convert SDK-created session to CLI-recognizable session.
   // The backend sends an onConversionResult callback with success/failure;
@@ -526,6 +745,8 @@ export function useSessionManagement({
     toggleFavoriteSession,
     updateHistoryTitle,
     applyHistoryTitleLocal,
+    regenerateHistoryTitle,
+    settleTitleRegeneration,
     convertToCliSession,
   };
 }

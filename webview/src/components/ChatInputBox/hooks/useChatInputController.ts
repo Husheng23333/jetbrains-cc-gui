@@ -1,6 +1,7 @@
 import { useCallback, useContext, useEffect, useEffectEvent, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import type {
+  Attachment,
   ChatInputBoxHandle,
   ChatInputBoxProps,
   PermissionMode,
@@ -26,6 +27,7 @@ import { useChatInputTextPipeline } from './useChatInputTextPipeline.js';
 import { SessionContext } from '../../../contexts/SessionContext.js';
 import { useUIState } from '../../../contexts/UIStateContext.js';
 import { useContextMenu } from '../../../hooks/useContextMenu.js';
+import { useArtifactReviews } from './useArtifactReviews';
 
 interface UseChatInputControllerOptions
   extends Pick<
@@ -33,6 +35,7 @@ interface UseChatInputControllerOptions
     | 'attachments'
     | 'value'
     | 'onSubmit'
+    | 'reasoningEffort'
     | 'onInput'
     | 'onAddAttachment'
     | 'onRemoveAttachment'
@@ -67,6 +70,7 @@ interface UseChatInputControllerOptions
 export function useChatInputController({
   selectedModel = DEFAULT_CLAUDE_MODEL_ID,
   currentProvider = 'claude',
+  reasoningEffort = 'high',
   attachments: externalAttachments,
   value,
   onSubmit,
@@ -103,11 +107,34 @@ export function useChatInputController({
     onRemoveAttachment,
   });
 
+  // Imperative draft-attachment access used when a queued message is restored
+  // for editing. Controlled attachments stay owned by the parent, so replacing
+  // them through the imperative handle is a no-op there.
+  const getDraftAttachments = useCallback(() => attachments, [attachments]);
+  const setDraftAttachments = useCallback((next: Attachment[]): boolean => {
+    if (externalAttachments !== undefined) return false;
+    setInternalAttachments(next);
+    return true;
+  }, [externalAttachments, setInternalAttachments]);
+  // Lets a caller vet a restore before it removes anything from the queue.
+  const canApplyDraftAttachments = useCallback(
+    () => externalAttachments === undefined,
+    [externalAttachments],
+  );
+
   // Reset draft attachments + clear JCEF ghosting when the session changes, so
   // attachments don't drift into a new conversation and leave stale thumbnails.
   // SessionContext is read null-safely so this component still mounts in tests
   // without a SessionProvider.
   const sessionCtx = useContext(SessionContext);
+  const artifactReviews = useArtifactReviews();
+  const reviewSessionRef = useRef(sessionCtx?.currentSessionId ?? null);
+  useEffect(() => {
+    const next = sessionCtx?.currentSessionId ?? null;
+    // null -> first assigned ID is the same conversation, not a session reset.
+    if (reviewSessionRef.current !== null && reviewSessionRef.current !== next) artifactReviews.reset();
+    reviewSessionRef.current = next;
+  }, [sessionCtx?.currentSessionId, artifactReviews.reset]);
   const clearInternalAttachments = useCallback(() => {
     setInternalAttachments([]);
     clearAttachmentsDraft?.();
@@ -196,12 +223,15 @@ export function useChatInputController({
 
   const handleSubmit = useSubmitHandler({
     getTextContent,
+    captureReviewSubmission: artifactReviews.captureSubmission,
     invalidateCache,
     attachments,
     sdkStatusLoading,
     sdkInstalled,
     currentProvider,
     clearInput,
+    selectedModel,
+    reasoningEffort,
     externalAttachments,
     setInternalAttachments,
     clearAttachmentsDraft,
@@ -263,6 +293,11 @@ export function useChatInputController({
     clearInput,
     hasContent,
     extractFileTags,
+    getAttachments: getDraftAttachments,
+    setAttachments: setDraftAttachments,
+    canApplyAttachments: canApplyDraftAttachments,
+    hasPendingImagePastes,
+    renderTags: renderTagsNowIfSafe,
     inlineCompletion,
     handleInput,
     ctxMenu,
@@ -300,6 +335,7 @@ export function useChatInputController({
     invalidateCache,
     cancelPendingInput,
     invalidateImagePastes,
+    renderTags: renderTagsNowIfSafe,
   });
 
   useNativeEventCapture({
@@ -389,6 +425,7 @@ export function useChatInputController({
   };
 
   return {
+    artifactReviews,
     attachments,
     handleAddAttachment,
     handleRemoveAttachment,

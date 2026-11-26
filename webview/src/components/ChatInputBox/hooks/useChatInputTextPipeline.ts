@@ -13,6 +13,7 @@ import { useSpaceKeyListener } from './useSpaceKeyListener.js';
 import { debounce } from '../utils/debounce.js';
 import { perfTimer } from '../../../utils/debug.js';
 import { DEBOUNCE_TIMING } from '../../../constants/performance.js';
+import { scrollCaretIntoView } from '../utils/scrollCaretIntoView.js';
 
 /**
  * InputEvent.inputType values that belong to an active IME composition.
@@ -230,6 +231,10 @@ export function useChatInputTextPipeline({
       adjustHeight();
       timer.mark('adjustHeight');
 
+      // The wrapper, rather than the contenteditable itself, owns overflow.
+      // Follow the actual caret so editing a long draft does not strand it outside the viewport.
+      scrollCaretIntoView(editableRef.current);
+
       // Trigger completion detection and state update
       debouncedDetectCompletion();
       setHasContent(!isEmpty);
@@ -294,6 +299,17 @@ export function useChatInputTextPipeline({
     if (!pendingInputRef.current) return;
     const text = getTextContent();
     notifyInput(isVisuallyEmpty(text) ? '' : text);
+  }, [getTextContent, notifyInput]);
+
+  useEffect(() => {
+    // Navigation does not unmount React. Flush unpublished keystrokes before the client's draft snapshot.
+    const flush = () => {
+      if (!pendingInputRef.current) return;
+      const text = getTextContent();
+      notifyInput(isVisuallyEmpty(text) ? '' : text);
+    };
+    window.addEventListener('pagehide', flush);
+    return () => window.removeEventListener('pagehide', flush);
   }, [getTextContent, notifyInput]);
 
   const clearInput = useCallback(() => {

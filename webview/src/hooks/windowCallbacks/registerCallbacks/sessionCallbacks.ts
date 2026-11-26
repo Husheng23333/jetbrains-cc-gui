@@ -12,6 +12,9 @@ import { downloadJSON } from '../../../utils/exportMarkdown';
 import { releaseSessionTransition } from '../sessionTransition';
 import { drainPendingDependencyStatus } from '../settingsBootstrap';
 import { sendBridgeEvent } from '../../../utils/bridge';
+import { resetClaudeBackgroundTasks } from '../../../utils/claudeBackgroundTasks';
+import { getSessionTransitionPending, isCurrentSessionTransitionCallback, isExpectedSessionTransitionId,
+  isSessionTransitionPreparing } from '../../../utils/sessionTransitionState';
 import {
   isDependencyStatusResponse,
   settleDependencyStatusRequest,
@@ -19,6 +22,16 @@ import {
 
 // Matches session-titles-service.cjs#updateTitle, which rejects longer titles.
 const CUSTOM_TITLE_MAX_LENGTH = 50;
+
+// Stable backend failure codes -> friendly toast copy. Unknown codes fall back
+// to the generic message (with the raw error appended when present).
+const TITLE_REGENERATION_ERROR_KEYS: Record<string, string> = {
+  empty_session: 'history.titleRegenerateFailed.emptySession',
+  disabled: 'history.titleRegenerateFailed.disabled',
+  session_not_found: 'history.titleRegenerateFailed.sessionNotFound',
+  generation_failed: 'history.titleRegenerateFailed.generationFailed',
+  custom_title: 'history.titleRegenerateFailed.customTitle',
+};
 
 export function registerSessionAndSdkCallbacks(
   options: UseWindowCallbacksOptions,
@@ -35,14 +48,26 @@ export function registerSessionAndSdkCallbacks(
     setCurrentRewindRequest,
     customSessionTitleRef,
     currentSessionIdRef,
+    historyDataRef,
     updateHistoryTitle,
     applyHistoryTitleLocal,
     setCustomSessionTitle,
+    settleTitleRegeneration,
   } = options;
 
-  window.setSessionId = (sessionId: string) => {
+  window.setSessionId = (sessionId: string, transitionToken?: string) => {
+    if (transitionToken && !isCurrentSessionTransitionCallback(transitionToken)) return;
+    // Until clear accepts the replacement, ordinary SDK identities still
+    // belong to the live old binding (including its first real session ID).
+    const liveOldIdentity = !transitionToken && isSessionTransitionPreparing();
+    // A matched accepted restore may canonicalize a history filename/alias to
+    // its native thread ID. The token proves ownership; string equality does not.
+    const acceptedRestoreIdentity = !!transitionToken && !isSessionTransitionPreparing();
+    if (!liveOldIdentity && !acceptedRestoreIdentity && !isExpectedSessionTransitionId(sessionId)) return;
+    const wasTransitioning = getSessionTransitionPending();
     const oldId = currentSessionIdRef.current;
-    releaseSessionTransition();
+    if (!sessionId || oldId && oldId !== sessionId) resetClaudeBackgroundTasks();
+    if (!wasTransitioning) releaseSessionTransition();
     // Java sends an empty ID when a restored transcript expires. Keep the
     // canonical no-session state and wait for a real ID before migrating titles.
     currentSessionIdRef.current = sessionId || null;
@@ -54,7 +79,7 @@ export function registerSessionAndSdkCallbacks(
     // data loss when Codex creates new threads for continued conversations.
     // Orphaned title entries are harmless and cleaned up on session deletion.
     const title = customSessionTitleRef.current;
-    if (title && oldId !== sessionId) {
+    if (title && oldId !== sessionId && !wasTransitioning) {
       // AI-generated titles can exceed the backend limit. Fall back to
       // local-only update so the UI keeps the title visible without a
       // silent backend write failure.
@@ -64,6 +89,15 @@ export function registerSessionAndSdkCallbacks(
         applyHistoryTitleLocal(sessionId, title);
       }
     }
+  };
+
+  // Cleanup failed before the backend changed the session binding. Keep the
+  // existing draft/queue/identity and flush its latest authoritative snapshot.
+  window.sessionTransitionFailed = (error: string, transitionToken?: string) => {
+    if (!isCurrentSessionTransitionCallback(transitionToken)) return;
+    window.__pendingSessionTransitionToast = undefined;
+    releaseSessionTransition(false, transitionToken);
+    if (error) options.addToast(error, 'error');
   };
 
   // The ready replay can precede this effect; controls need that identity before their first dispatch.
@@ -172,13 +206,109 @@ export function registerSessionAndSdkCallbacks(
     // Only apply the title if it matches the current session to prevent
     // stale events from overwriting the wrong session's title.
     if (currentSessionIdRef.current !== sessionId) return;
-    if (options.currentProviderRef.current === 'codex') {
-      options.setRestoredSessionTitle({ sessionId, title: title.trim() });
-      if (!customSessionTitleRef.current) applyHistoryTitleLocal(sessionId, title.trim());
+    const trimmed = title.trim();
+    // Automatic titles go to restoredSessionTitle, never to
+    // customSessionTitle: that slot is reserved for manual edits and the
+    // persisted custom title. Keeping the two apart means a later AI title can
+    // never overwrite a manual title, and restoreSessionTitle never mistakes an
+    // AI title for a manual edit.
+    options.setRestoredSessionTitle({ sessionId, title: trimmed });
+    if (!customSessionTitleRef.current) applyHistoryTitleLocal(sessionId, trimmed);
+  };
+
+  // =========================================================================
+  // Persisted Custom Title Callback
+  // =========================================================================
+
+  /**
+   * Applies the user-set title saved in session-titles.json after a webview
+   * restart. A restored transcript only carries the CLI-derived title, so the
+   * header would otherwise show the old AI title until the session is reopened
+   * from the history list.
+   */
+  window.restoreSessionTitle = (sessionId: string, title: string) => {
+    if (!title || !title.trim() || !sessionId) return;
+    // Only a title keyed to the session on screen may show; a stale push for a
+    // previously opened session must not retitle the current one.
+    if (currentSessionIdRef.current !== sessionId) return;
+    // customSessionTitle carries only manual edits and persisted titles, so a
+    // nonempty value is a newer manual edit that must win over this restore.
+    if (customSessionTitleRef.current) return;
+    setCustomSessionTitle(title.trim());
+  };
+
+  // Apply a title that arrived before this effect mounted (see main.tsx).
+  if (window.__pendingRestoreSessionTitle) {
+    const pending = window.__pendingRestoreSessionTitle;
+    delete window.__pendingRestoreSessionTitle;
+    window.restoreSessionTitle?.(pending.sessionId, pending.title);
+  }
+
+  // =========================================================================
+  // AI Title Regeneration Result Callback (refresh buttons)
+  // =========================================================================
+
+  // Registered once for the app lifetime (unlike the per-view registration the
+  // history list originally used) so the chat-header refresh button also
+  // receives its result while the history view is not mounted.
+  window.onTitleRegenerated = (json: string) => {
+    let payload: { sessionId?: string; success?: boolean; title?: string; code?: string; error?: string };
+    try {
+      payload = JSON.parse(json);
+    } catch {
       return;
     }
-    setCustomSessionTitle(title.trim());
-    applyHistoryTitleLocal(sessionId, title.trim());
+    if (!payload.sessionId) return;
+
+    const sessionId = payload.sessionId;
+    settleTitleRegeneration(sessionId);
+
+    if (payload.success && payload.title) {
+      applyHistoryTitleLocal(sessionId, payload.title);
+      // Live-update the on-screen header too. customSessionTitle wins in
+      // deriveSessionTitle; loading a history session seeds it with the
+      // displayed (AI) title — without this push the header keeps showing
+      // the old title until the next session switch re-seeds it. When the
+      // slot is empty (fresh session) the regenerated title goes through
+      // setRestoredSessionTitle instead: customSessionTitle is reserved for
+      // manual edits and seeded titles, and an AI title landing there would
+      // be persisted as a manual title by the B-011 migration on the next
+      // setSessionId switch.
+      const session = historyDataRef.current?.sessions?.find(
+        (entry) => entry.sessionId === sessionId,
+      );
+      if (currentSessionIdRef.current === sessionId && session?.hasCustomTitle !== true) {
+        if (customSessionTitleRef.current) {
+          setCustomSessionTitle(payload.title);
+        } else {
+          options.setRestoredSessionTitle({ sessionId, title: payload.title });
+        }
+      }
+      addToast(tRef.current('history.titleRegenerated'), 'success');
+      return;
+    }
+    // The chat-header title of the current session updates through the
+    // title_generated daemon event (updateSessionTitle above); failures keep
+    // the original title untouched, so only the toast is needed here.
+    if (payload.code === 'custom_title') {
+      // The backend found a manual title in session-titles.json that this
+      // snapshot didn't know about (e.g. the session was renamed from the
+      // chat header before the history view ever loaded it). Mark the row so
+      // both refresh buttons hide without waiting for a history reload.
+      options.setHistoryData(previous => previous?.sessions ? {
+        ...previous,
+        sessions: previous.sessions.map(session => session.sessionId === sessionId && session.hasCustomTitle !== true
+          ? { ...session, hasCustomTitle: true }
+          : session),
+      } : previous);
+    }
+    const reasonKey = payload.code ? TITLE_REGENERATION_ERROR_KEYS[payload.code] : undefined;
+    const message = reasonKey
+      ? tRef.current(reasonKey)
+      : payload.error
+        ? `${tRef.current('history.titleRegenerateFailed.generic')}: ${payload.error}`
+        : tRef.current('history.titleRegenerateFailed.generic');
+    addToast(message, 'error');
   };
 
   // =========================================================================

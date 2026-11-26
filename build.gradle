@@ -34,6 +34,12 @@ checkstyle {
     sourceSets = [project.sourceSets.main]
 }
 
+// The default 512m worker heap runs out on the full main source set (OutOfMemoryError
+// surfaces as "Error was thrown while processing <random file>").
+tasks.withType(Checkstyle).configureEach {
+    maxHeapSize = '1g'
+}
+
 // sourceSets above unhooks checkstyleTest from the check lifecycle; disabling the
 // task as well makes an explicit `gradlew checkstyleTest` a SKIPPED no-op instead
 // of a failure.
@@ -44,7 +50,7 @@ tasks.named('checkstyleTest') {
 group = 'com.github.idea-claude-code-gui'
 // Keep this line as a plain literal: webview/scripts/extract-version.mjs matches it
 // with /^version\s*=\s*'(.+)'$/ to generate the webview's APP_VERSION.
-version = '0.6.3'
+version = '0.6.7'
 
 // Local-only override for custom builds (e.g. distribution flavors). Put
 // plugin.version=... in the gitignored local.properties (or pass -Pplugin.version=...)
@@ -137,6 +143,8 @@ dependencies {
         // Git-less IDE configurations. Used for real `git diff` via
         // git4idea.commands.* in the Commit AI feature.
         bundledPlugin('Git4Idea')
+        // Native Markdown preview annotations load only with this optional plugin.
+        bundledPlugin('org.intellij.plugins.markdown')
 
         instrumentationTools()
 
@@ -148,6 +156,9 @@ dependencies {
 }
 
 intellijPlatform {
+    // Use current non-instrumented output when bytecode instrumentation is disabled.
+    instrumentCode = false
+
     pluginVerification {
         // Keep local verification focused on binary/internal API compatibility
         // issues that match Marketplace rejection criteria.
@@ -169,6 +180,9 @@ intellijPlatform {
             // the CefResourceHandler / PluginManagerCore issues during
             // marketplace verification.
             ide('IU', '262.9437.22')
+            // sinceBuild floor (2023.3): verifies the native Markdown preview
+            // annotation classes can load on the oldest supported IDE.
+            ide('IC', '2023.3.7')
         }
     }
 }
@@ -192,10 +206,20 @@ sourceSets {
     }
 }
 
+tasks.withType(Test).configureEach {
+    // Configuration fixtures must never inherit the host CLI data directory.
+    environment 'CODEX_HOME', ''
+}
+
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
     // Ensure consistent source/target compatibility
     options.release.set(17)
+}
+
+tasks.named('test', Test) {
+    // Keep native skill fixtures isolated from the host's live configuration.
+    environment 'CODEX_HOME', ''
 }
 
 // Ensure plugin.xml is patched with the correct since/until build and change notes
@@ -300,10 +324,6 @@ tasks.matching { it.name.startsWith('buildSearchableOptions') }.configureEach {
 }
 
 tasks.named('buildSearchableOptions') {
-    enabled = false
-}
-
-tasks.named('instrumentCode') {
     enabled = false
 }
 

@@ -4,10 +4,14 @@ import com.github.claudecodegui.handler.CodexMessageConverter;
 import com.github.claudecodegui.provider.common.MessageCallback;
 import com.github.claudecodegui.provider.common.SDKResult;
 import com.github.claudecodegui.session.ClaudeSession.Message;
+import com.github.claudecodegui.util.TokenUsageUtils;
+import com.github.claudecodegui.util.TurnUsageAccumulator;
 import com.github.claudecodegui.util.UsageCostCalculator;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
 import com.intellij.openapi.diagnostic.Logger;
 
 import java.util.HashMap;
@@ -28,11 +32,23 @@ public class CodexMessageHandler implements MessageCallback {
     private static final Logger LOG = Logger.getInstance(CodexMessageHandler.class);
 
     /**
+     * CLI providers whose bridge emits one Claude-schema {@code [USAGE]} marker per
+     * model step, with cache-exclusive input and the provider's own {@code cost_usd}.
+     */
+    private static final Set<String> STEP_USAGE_PROVIDERS = Set.of("gemini", "opencode", "omp");
+
+    /**
      * state.
      */
     private final SessionState state;
-    private final Object turnOwner;
-    private final String runtimeSessionEpoch;
+    private final TurnGuard turnGuard;
+    private final SessionExecutionState.Turn executionTurn;
+    private final Map<String, SessionExecutionState.Interaction> executionInteractions = new HashMap<>();
+
+    @Override
+    public String executionScope() {
+        return executionTurn == null ? "" : executionTurn.bindingEpoch() + "/" + executionTurn.turnId();
+    }
     /**
      * callback handler.
      */
@@ -68,6 +84,10 @@ public class CodexMessageHandler implements MessageCallback {
 
     private com.google.gson.JsonObject currentTurnContextUsage;
 
+    /** Running whole-turn total of per-step [USAGE] markers, and the message showing it. */
+    private final TurnUsageAccumulator stepTurnUsage = new TurnUsageAccumulator();
+    private Message stepTurnUsageTarget;
+
     /**
      * Constructor.
      *
@@ -90,30 +110,39 @@ public class CodexMessageHandler implements MessageCallback {
         this(state, callbackHandler, true, clientMessageId, state.getTurnOwner());
     }
 
+    CodexMessageHandler(SessionState state, CallbackHandler callbackHandler, String clientMessageId, Object expectedTurnOwner) {
+        this(state, callbackHandler, true, clientMessageId, expectedTurnOwner);
+    }
+
     private CodexMessageHandler(SessionState state, CallbackHandler callbackHandler,
                                 boolean reportStateErrors, String clientMessageId, Object turnOwner) {
         this.state = state;
-        this.turnOwner = turnOwner;
-        this.runtimeSessionEpoch = state.getRuntimeSessionEpoch();
+        this.turnGuard = new TurnGuard(state, turnOwner);
+        this.executionTurn = state.executionTurnForOwner(turnOwner);
         this.callbackHandler = callbackHandler;
         this.reportStateErrors = reportStateErrors;
         this.clientMessageId = clientMessageId;
     }
 
     /**
-     * Handle a received message by dispatching to the appropriate handler based on type.
+     * Dispatches a received stream message to the appropriate handler based on type.
      *
-     * @param type type
-     * @param content content
-     * @since 1.0.0
+     * @param type Message type identifier
+     * @param content Message payload content
      */
     @Override
     public void onMessage(String type, String content) {
         synchronized (state.getMessageStateLock()) {
-            if (!ownsCurrentTurn()) {
+            // Channel events outlive their turn; only their session mutations require current ownership.
+            if ("codex_runtime_event".equals(type)) {
+                this.handleRuntimeEvent(content);
+                return;
+            }
+            if (!ownsBindingAndTurn()) {
                 return;
             }
             // [FIX] Handle multiple message types
+            observeExecution(type);
             // Codex message-service.js sends:
             // - type='assistant': contains thinking, tool_use, text
             // - type='user': contains tool_result
@@ -131,6 +160,17 @@ public class CodexMessageHandler implements MessageCallback {
             } else if ("session_id".equals(type)) {
                 // Handle session_id/thread_id (for session recovery)
                 handleSessionId(content);
+            } else if ("usage".equals(type)) {
+                // Gemini, OpenCode and OMP emit one [USAGE] marker per model step,
+                // which handleUsage sums into turnUsage (the latest step also feeds
+                // the context ring). Every other CLI provider (kimi / minimax /
+                // pi / dsh / ...) sends one usage snapshot per turn, which
+                // pushes the context ring directly.
+                if (STEP_USAGE_PROVIDERS.contains(state.getProvider())) {
+                    handleUsage(content);
+                } else {
+                    handleUsageMessage(content);
+                }
             } else if ("event_msg".equals(type)) {
                 handleEventMessage(content);
             } else if ("stream_start".equals(type)) {
@@ -150,18 +190,6 @@ public class CodexMessageHandler implements MessageCallback {
                 }
             } else if ("message_end".equals(type)) {
                 handleMessageEnd();
-            } else if ("codex_runtime_event".equals(type)) {
-                JsonObject event = new com.google.gson.Gson().fromJson(content, JsonObject.class);
-                if (event != null && event.has("kind") && "thread/settings/updated".equals(event.get("kind").getAsString())
-                        && event.has("threadId") && !event.get("threadId").isJsonNull()
-                        && event.get("threadId").getAsString().equals(this.state.getSessionId())
-                        && event.has("payload") && event.get("payload").isJsonObject()) {
-                    JsonObject settings = event.getAsJsonObject("payload");
-                    if (!this.state.isCodexCwdExplicit() && settings.has("cwd") && settings.get("cwd").isJsonPrimitive()) {
-                        this.state.setCwd(settings.get("cwd").getAsString());
-                    }
-                }
-                callbackHandler.notifyCodexRuntimeEvent(content);
             } else {
                 LOG.debug("CodexMessageHandler: Unhandled message type: " + type);
             }
@@ -177,9 +205,11 @@ public class CodexMessageHandler implements MessageCallback {
     @Override
     public void onError(String error) {
         synchronized (state.getMessageStateLock()) {
-            if (!ownsCurrentTurn()) {
+            if (!ownsBindingAndTurn()) {
                 return;
             }
+            state.getExecutionState().finish(executionTurn, SessionExecutionState.Outcome.FAILED);
+            clearNativeInteractions();
             isStreaming = false;
             streamEndedThisTurn = false;
             state.setError(error);
@@ -220,9 +250,18 @@ public class CodexMessageHandler implements MessageCallback {
     @Override
     public void onComplete(SDKResult result) {
         synchronized (state.getMessageStateLock()) {
-            if (!ownsCurrentTurn()) {
+            if (!ownsBindingAndTurn()) {
                 return;
             }
+            if (result == null) {
+                state.getExecutionState().activity(executionTurn, SessionExecutionState.Phase.UNKNOWN);
+            } else {
+                state.getExecutionState().finish(executionTurn,
+                        result.cancelled ? SessionExecutionState.Outcome.CANCELLED
+                                : result.success ? SessionExecutionState.Outcome.SUCCEEDED : SessionExecutionState.Outcome.FAILED,
+                        result.processExited);
+            }
+            clearNativeInteractions();
             boolean streamEndedBeforeComplete = streamEndedThisTurn;
             boolean wasStreaming = isStreaming;
 
@@ -245,10 +284,95 @@ public class CodexMessageHandler implements MessageCallback {
 
     // ===== Private methods =====
 
-    private boolean ownsCurrentTurn() {
-        return this.state.isCurrentTurn(this.turnOwner)
-                && this.runtimeSessionEpoch.equals(this.state.getRuntimeSessionEpoch());
+    private boolean ownsBindingAndTurn() {
+        return turnGuard.ownsCurrentTurn();
     }
+
+    private void observeExecution(String type) {
+        SessionExecutionState.Phase phase = switch (type) {
+            case "thinking_delta" -> SessionExecutionState.Phase.THINKING;
+            case "assistant", "content", "content_delta", "user", "stream_start" -> SessionExecutionState.Phase.RUNNING;
+            case "stream_end" -> SessionExecutionState.Phase.UNKNOWN;
+            default -> null;
+        };
+        if (phase != null) {
+            state.getExecutionState().activity(executionTurn, phase);
+        }
+    }
+
+    private void handleRuntimeEvent(String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        JsonElement parsed;
+        try {
+            parsed = JsonParser.parseString(content);
+        } catch (JsonParseException e) {
+            LOG.debug("Ignoring malformed Codex runtime event");
+            return;
+        }
+        if (!parsed.isJsonObject()) {
+            return;
+        }
+        JsonObject event = parsed.getAsJsonObject();
+        if (this.ownsBindingAndTurn()) {
+            this.observeNativeInteraction(event);
+            if ("thread/settings/updated".equals(stringProperty(event, "kind"))
+                    && this.state.getSessionId() != null && this.state.getSessionId().equals(stringProperty(event, "threadId"))
+                    && event.has("payload") && event.get("payload").isJsonObject()) {
+                String cwd = stringProperty(event.getAsJsonObject("payload"), "cwd");
+                if (!this.state.isCodexCwdExplicit() && cwd != null && !cwd.isBlank()) {
+                    this.state.setCwd(cwd);
+                }
+            }
+        }
+        this.callbackHandler.notifyCodexRuntimeEvent(content);
+    }
+
+    private static String stringProperty(JsonObject object, String name) {
+        JsonElement value = object.get(name);
+        return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isString() ? value.getAsString() : null;
+    }
+
+    private void clearNativeInteractions() {
+        for (SessionExecutionState.Interaction interaction : executionInteractions.values()) {
+            state.getExecutionState().endInteraction(interaction);
+        }
+        executionInteractions.clear();
+    }
+
+    /** Blocking native requests contribute to the execution wait state; async questions do not. */
+    private void observeNativeInteraction(JsonObject event) {
+        String key = stringProperty(event, "interactionKey");
+        String kind = stringProperty(event, "kind");
+        if (key == null || key.isBlank() || kind == null) {
+            return;
+        }
+        if ("interactionResolved".equals(kind)) {
+            state.getExecutionState().endInteraction(executionInteractions.remove(key));
+        } else if ("interactionRequested".equals(kind) && !executionInteractions.containsKey(key)
+                && event.has("payload") && event.get("payload").isJsonObject()) {
+            JsonObject payload = event.getAsJsonObject("payload");
+            String method = stringProperty(payload, "method");
+            if (method == null || method.isBlank()) {
+                return;
+            }
+            JsonObject params = payload.has("params") && payload.get("params").isJsonObject()
+                    ? payload.getAsJsonObject("params") : null;
+            if (params != null && params.has("isBlocking") && params.get("isBlocking").isJsonPrimitive()
+                    && params.get("isBlocking").getAsJsonPrimitive().isBoolean()
+                    && !params.get("isBlocking").getAsBoolean()) {
+                return;
+            }
+            SessionExecutionState.WaitReason reason = method.endsWith("requestUserInput")
+                    ? SessionExecutionState.WaitReason.QUESTION : SessionExecutionState.WaitReason.PERMISSION;
+            SessionExecutionState.Interaction interaction = state.getExecutionState().beginInteraction(executionTurn, reason);
+            if (interaction != null) {
+                executionInteractions.put(key, interaction);
+            }
+        }
+    }
+
 
     /**
      * Handle a complete assistant message in JSON format.
@@ -531,6 +655,120 @@ public class CodexMessageHandler implements MessageCallback {
             }
         }
         return 0;
+    }
+
+    /**
+     * Handle a per-step usage marker ([USAGE] → onMessage("usage", json)).
+     *
+     * <p>OpenCode and OMP emit one marker per model step. The latest step is the current
+     * context snapshot ({@code message.usage}, read by the context ring); the steps
+     * of a turn are summed into {@code turnUsage} for the message footer.</p>
+     *
+     * <p><b>Provider gate:</b> only the gemini bridge's marker is consumed.
+     * dsh/omp/pi also emit [USAGE] through the shared marker protocol, but
+     * their payload shapes and per-call emission semantics are unvetted and
+     * their markers are dropped.
+     *
+     * <p>The gemini payload is the canonical claude-shape usage (input_tokens /
+     * output_tokens / cache_creation_input_tokens / cache_read_input_tokens,
+     * plus an additive thinking_tokens) and is stored VERBATIM: the provider's
+     * input figure is reported cache-exclusive, so the codex buildTurnUsage
+     * normalization (input includes cache → subtract cacheRead) must NOT be
+     * applied here. thinking_tokens passes through for the per-turn display
+     * but is never part of the context-ring math.
+     *
+     * <p>A payload with no non-zero displayable figure is ignored entirely:
+     * stamping it would record a genuinely free turn, which would be a lie.
+     *
+     * @param jsonContent canonical usage JSON
+     */
+    private void handleUsage(String jsonContent) {
+        if (jsonContent == null || jsonContent.isEmpty()) {
+            return;
+        }
+        String provider = state.getProvider();
+        if (provider == null || !STEP_USAGE_PROVIDERS.contains(provider)) {
+            LOG.debug("Usage marker dropped (provider '" + provider
+                    + "' is not vetted for [USAGE]): " + jsonContent);
+            return;
+        }
+        try {
+            com.google.gson.JsonObject usage = new com.google.gson.Gson().fromJson(jsonContent, com.google.gson.JsonObject.class);
+            if (usage == null || !hasPositiveDisplayableFigure(usage)) {
+                LOG.debug("Usage marker ignored (no reported figures): " + jsonContent);
+                return;
+            }
+
+            // A turn whose text arrives only via the result-fallback delta (or an
+            // ERROR turn with no text) has no current assistant message yet — create
+            // THIS turn's message instead of letting the marker fall onto the
+            // previous turn's bubble (or vanish on the first turn). A fallback
+            // content_delta later in the same turn then fills this message.
+            ensureCurrentAssistantMessageExists();
+            Message target = currentAssistantMessage;
+            assistantMessageObject(target.raw).add("usage", usage.deepCopy());
+            stampStepIntoTurnUsage(target, usage);
+            notifyContextUsageFromStep(usage);
+            callbackHandler.notifyMessageUpdate(state.getMessages());
+        } catch (Exception e) {
+            LOG.debug("Usage marker parse skipped: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Add one step to the running turn total and keep it on a single message, so a
+     * turn whose steps land on different messages still shows one footer total.
+     */
+    private void stampStepIntoTurnUsage(Message target, com.google.gson.JsonObject stepUsage) {
+        stepTurnUsage.add(stepUsage);
+        if (stepTurnUsageTarget != null && stepTurnUsageTarget != target && stepTurnUsageTarget.raw != null) {
+            stepTurnUsageTarget.raw.remove("turnUsage");
+            stepTurnUsageTarget.raw.remove("turnCostUsd");
+        }
+        stepTurnUsageTarget = target;
+        target.raw.add("turnUsage", stepTurnUsage.snapshot());
+        Double turnCostUsd = stepTurnUsage.turnCostUsd(state.getProvider(), state.getModel());
+        if (turnCostUsd != null) {
+            target.raw.addProperty("turnCostUsd", turnCostUsd);
+        } else {
+            target.raw.remove("turnCostUsd");
+        }
+    }
+
+    private void notifyContextUsageFromStep(com.google.gson.JsonObject stepUsage) {
+        int used = TokenUsageUtils.extractContextTokens(stepUsage, state.getProvider());
+        if (used <= 0) {
+            return;
+        }
+        int fallbackMax = com.github.claudecodegui.handler.provider.ModelProviderHandler
+                .resolveContextLimit(state.getProvider(), state.getModel(), state.getCwd());
+        int maxTokens = TokenUsageUtils.extractMaxTokens(stepUsage, fallbackMax);
+        LOG.info("CLI [USAGE] context ring: used=" + used + " max=" + maxTokens
+                + " model=" + state.getModel());
+        callbackHandler.notifyUsageUpdate(used, maxTokens);
+    }
+
+    private static boolean hasPositiveDisplayableFigure(com.google.gson.JsonObject usage) {
+        String[] displayableKeys = {
+            "input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "total_tokens"
+        };
+        for (String key : displayableKeys) {
+            JsonElement value = usage.get(key);
+            if (value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isNumber()
+                    && value.getAsLong() > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static com.google.gson.JsonObject assistantMessageObject(com.google.gson.JsonObject raw) {
+        if (!raw.has("message") || !raw.get("message").isJsonObject()) {
+            com.google.gson.JsonObject messageObj = new com.google.gson.JsonObject();
+            messageObj.add("content", new JsonArray());
+            raw.add("message", messageObj);
+        }
+        return raw.getAsJsonObject("message");
     }
 
     /**
@@ -1048,6 +1286,8 @@ public class CodexMessageHandler implements MessageCallback {
         isStreaming = true;
         streamEndedThisTurn = false;
         currentTurnContextUsage = null;
+        stepTurnUsage.reset();
+        stepTurnUsageTarget = null;
         resetStreamingAccumulator();
         callbackHandler.notifyStreamStart();
         LOG.debug("Codex stream started");
@@ -1082,6 +1322,44 @@ public class CodexMessageHandler implements MessageCallback {
      */
     private void handleMessageEnd() {
         LOG.debug("Codex message_end received, deferring stream cleanup to stream_end/onComplete");
+    }
+
+    /**
+     * Handle a usage update from a non-Codex CLI provider (e.g. minimax, dsh, kimi).
+     * The [USAGE] marker is forwarded by ai-bridge as type="usage" with the usage
+     * JSON object as content. This path directly pushes the context ring because
+     * Codex has no authoritative token_count event for these providers.
+     *
+     * @param jsonContent usage JSON content
+     * @since 1.0.0
+     */
+    private void handleUsageMessage(String jsonContent) {
+        try {
+            com.google.gson.Gson gson = new com.google.gson.Gson();
+            com.google.gson.JsonObject usage = gson.fromJson(jsonContent, com.google.gson.JsonObject.class);
+            // Raw shapes with no snake_case figures (Pi sends input/output/cacheRead)
+            // would push a 0 ring over the last real reading.
+            if (usage == null || !hasPositiveDisplayableFigure(usage)) {
+                return;
+            }
+
+            currentTurnContextUsage = usage.deepCopy();
+
+            boolean updated = attachUsageToLastAssistant(usage, null);
+            if (updated) {
+                callbackHandler.notifyMessageUpdate(state.getMessages());
+                LOG.debug("Codex usage applied from [USAGE] message");
+            } else {
+                LOG.debug("Codex usage received but no assistant message to attach");
+            }
+
+            int usedTokens = TokenUsageUtils.extractContextTokens(usage, state.getProvider());
+            int maxTokens = com.github.claudecodegui.handler.SettingsHandler.getModelContextLimit(state.getModel());
+            callbackHandler.notifyUsageUpdate(usedTokens, maxTokens);
+            LOG.debug("Codex usage push: usedTokens=" + usedTokens + ", maxTokens=" + maxTokens);
+        } catch (Exception e) {
+            LOG.debug("Failed to parse Codex usage message: " + e.getMessage());
+        }
     }
 
     /**

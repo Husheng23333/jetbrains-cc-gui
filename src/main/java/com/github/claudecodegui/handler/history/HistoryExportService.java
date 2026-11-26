@@ -150,6 +150,12 @@ class HistoryExportService {
             LOG.info("[HistoryHandler] 使用 MiniMaxHistoryReader 导出 MiniMax 会话");
             return toJsonArray(new MiniMaxHistoryReader().getSessionMessages(sessionId, projectPath));
         }
+        if ("gemini".equals(provider)) {
+            LOG.info("[HistoryHandler] 使用 GeminiHistoryReader 导出 Gemini 会话");
+            return toJsonArray(
+                    new com.github.claudecodegui.provider.gemini.GeminiHistoryReader()
+                            .getSessionMessages(sessionId, projectPath));
+        }
         if ("zcode".equals(provider)) {
             LOG.info("[HistoryHandler] 使用 ZcodeHistoryReader 导出 ZCode 会话");
             return toJsonArray(new ZcodeHistoryReader().getSessionMessages(sessionId, projectPath));
@@ -164,7 +170,9 @@ class HistoryExportService {
         }
         LOG.info("[HistoryHandler] 使用 ClaudeHistoryReader 读取 Claude 会话消息");
         ClaudeHistoryReader historyReader = new ClaudeHistoryReader();
-        String messagesJson = historyReader.getSessionMessagesAsJson(projectPath, sessionId);
+        String projectRoot = context.getProject() == null ? projectPath : context.getProject().getBasePath();
+        String historyCwd = historyReader.resolveRepositoryHistoryCwd(sessionId, projectPath, projectRoot, context.getSettingsService());
+        String messagesJson = historyReader.getSessionMessagesAsJson(historyCwd, sessionId);
         return JsonParser.parseString(messagesJson != null ? messagesJson : "[]");
     }
 

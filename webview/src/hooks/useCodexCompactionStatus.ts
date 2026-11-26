@@ -59,17 +59,15 @@ export function useCodexCompactionStatus({
       }
       const reason = typeof response.error === 'string' ? response.error : '';
       const label = t('chat.compactSummary.nativeFailed');
-      const explanation = reason.includes('already has an active writer') || reason.includes('already has a live local writer')
-        || reason.includes('already owned by another')
-        ? t('chat.compactSummary.writerOccupied') : reason;
-      finish(response.errorReported === true ? undefined : explanation ? `${label}: ${explanation}` : label);
+      // The message renderer needs the original error to offer recovery instructions.
+      finish(response.errorReported === true ? undefined : reason ? `${label}: ${reason}` : label);
     };
     window.addEventListener('codex-interaction-response', onResponse);
     return () => window.removeEventListener('codex-interaction-response', onResponse);
   }, [provider, threadId, t, finish]);
 
   const startCompaction = useCallback(() => {
-    if (provider !== 'codex' || pendingRequest.current) return;
+    if (provider !== 'codex' || pendingRequest.current) return false;
     const requestId = `compact-${crypto.randomUUID()}`;
     pendingRequest.current = requestId;
     const startTime = Date.now();
@@ -79,7 +77,9 @@ export function useCodexCompactionStatus({
     // Install ownership before dispatch: an immediate rejection is terminal too.
     if (!sendBridgeEvent('codex_compact', JSON.stringify({ requestId, threadId }))) {
       finish(t('chat.bridgeUnavailable', { defaultValue: 'Bridge is not available right now' }));
+      return false;
     }
+    return true;
   }, [provider, threadId, t, finish, setLoading, setLoadingStartTime]);
 
   return { pending, startedAt, startCompaction };

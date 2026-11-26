@@ -23,6 +23,19 @@ describe('extractAgentResultText', () => {
       expect(extractAgentResultText({ type: 'tool_result', tool_use_id: 'launch', content }, 'spawn_agent')).toBe(content);
     }
   });
+
+  it('drops the invoke_subagent launch ack and keeps other result text', () => {
+    expect(extractAgentResultText({
+      type: 'tool_result',
+      tool_use_id: 'call-1',
+      content: 'Created the following subagents:\n  "conversationId": "019fa70f-0653-73e2-a613-1fb0a9e83a2b"',
+    }, 'invoke_subagent')).toBeUndefined();
+    expect(extractAgentResultText({
+      type: 'tool_result',
+      tool_use_id: 'call-1',
+      content: 'TOOL_ERROR: launch failed',
+    }, 'invoke_subagent')).toBe('TOOL_ERROR: launch failed');
+  });
 });
 
 describe('isAsyncAgentInput', () => {
@@ -108,6 +121,13 @@ describe('readToolUseStatus', () => {
 });
 
 describe('parseSpawnAgentMeta', () => {
+  it.each(['max', 'ultra'])('retains native %s child model metadata from launch receipts', (effort) => {
+    expect(parseSpawnAgentMeta({ task_name: 'review' }, { type: 'tool_result',
+      content: `Agent started (gpt-6-astra ${effort})` })).toMatchObject({
+      agentPath: 'review', model: 'gpt-6-astra', reasoningEffort: effort,
+    });
+  });
+
   it('uses Codex task_name as the stable agent path', () => {
     expect(parseSpawnAgentMeta({
       task_name: 'audit_ui',

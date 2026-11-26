@@ -1,15 +1,21 @@
 package com.github.claudecodegui.session;
 
+import com.github.claudecodegui.cli.CliToolId;
 import com.github.claudecodegui.i18n.ClaudeCodeGuiBundle;
+import com.github.claudecodegui.markdown.MarkdownReviewPrompt;
+import com.github.claudecodegui.markdown.MarkdownReviewService;
 import com.github.claudecodegui.settings.CodemossSettingsService;
 import com.github.claudecodegui.settings.CodexSettingsManager;
+import com.github.claudecodegui.settings.SessionSupplierCatalog;
 import com.github.claudecodegui.notifications.ClaudeNotifier;
 import com.github.claudecodegui.provider.claude.ClaudeSDKBridge;
 import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.provider.grok.GrokSDKBridge;
+import com.github.claudecodegui.provider.grok.GrokUsageLedger;
 import com.github.claudecodegui.provider.common.MarkerCliBridge;
 import com.github.claudecodegui.provider.zcode.ZcodeSDKBridge;
 import com.github.claudecodegui.provider.common.MessageCallback;
+import com.github.claudecodegui.provider.common.SDKResult;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.diagnostic.Logger;
@@ -27,6 +33,9 @@ public class SessionSendService {
 
     private static final Logger LOG = Logger.getInstance(SessionSendService.class);
     public static final String CODEX_FAST_SERVICE_TIER = "fast";
+    private static final String PROVIDER_GROK = "grok";
+    private static final String PROVIDER_ZCODE = "zcode";
+    private static final String PROVIDER_GEMINI = "gemini";
 
     private final Project project;
     private final SessionState state;
@@ -40,6 +49,7 @@ public class SessionSendService {
     private final ZcodeSDKBridge zcodeSDKBridge;
     private final Map<String, MarkerCliBridge> cliBridges;
     private final SessionContextService contextService;
+    private final MarkdownReviewPrompt.SessionContext markdownReviewContext = new MarkdownReviewPrompt.SessionContext();
 
     public SessionSendService(
             Project project,
@@ -120,6 +130,10 @@ public class SessionSendService {
             String baseSummary = (userMessage.content != null && !userMessage.content.isEmpty())
                     ? userMessage.content
                     : normalizedInput;
+            String reviewSummary = MarkdownReviewPrompt.displaySummary(baseSummary);
+            if (reviewSummary != null) {
+                baseSummary = reviewSummary;
+            }
             String newSummary = baseSummary.length() > 45 ? baseSummary.substring(0, 45) + "..." : baseSummary;
             state.setSummary(newSummary);
             callbackFacade.notifySummaryReceived(newSummary);
@@ -215,6 +229,77 @@ public class SessionSendService {
             String clientMessageId,
             JsonObject nativeCodexSettings
     ) {
+        return sendMessageToProvider(channelId, input, attachments, openedFilesJson, externalAgentPrompt, fileTagPaths,
+                requestedPermissionMode, requestedReasoningEffort, requestedCodexFastMode, requestedDshPreset,
+                null, clientMessageId, nativeCodexSettings, null, state.getTurnOwner());
+    }
+
+    public CompletableFuture<Void> sendMessageToProvider(
+            String channelId, String input, List<ClaudeSession.Attachment> attachments, JsonObject openedFilesJson,
+            String externalAgentPrompt, List<String> fileTagPaths, String requestedPermissionMode,
+            String requestedReasoningEffort, String requestedCodexFastMode, String requestedDshPreset, Object expectedTurnOwner
+    ) {
+        return sendMessageToProvider(channelId, input, attachments, openedFilesJson, externalAgentPrompt, fileTagPaths,
+                requestedPermissionMode, requestedReasoningEffort, requestedCodexFastMode, requestedDshPreset,
+                null, null, null, null, expectedTurnOwner);
+    }
+
+    /**
+     * @param requestedOmpApprovalMode OMP approval mode this message was sent with
+     *                                 ("" = OMP's own setting), or null when the sender states none
+     */
+    public CompletableFuture<Void> sendMessageToProvider(
+            String channelId, String input, List<ClaudeSession.Attachment> attachments, JsonObject openedFilesJson,
+            String externalAgentPrompt, List<String> fileTagPaths, String requestedPermissionMode,
+            String requestedReasoningEffort, String requestedCodexFastMode, String requestedDshPreset,
+            String requestedOmpApprovalMode, String clientMessageId, JsonObject nativeCodexSettings,
+            Object expectedTurnOwner
+    ) {
+        return sendMessageToProvider(channelId, input, attachments, openedFilesJson, externalAgentPrompt, fileTagPaths,
+                requestedPermissionMode, requestedReasoningEffort, requestedCodexFastMode, requestedDshPreset,
+                requestedOmpApprovalMode, clientMessageId, nativeCodexSettings, null, expectedTurnOwner);
+    }
+
+    /**
+     * Routes a user turn to the active provider while verifying turn ownership.
+     *
+     * @param channelId Chat host identifier
+     * @param input Normalized user input
+     * @param attachments User attachments
+     * @param openedFilesJson Editor context
+     * @param externalAgentPrompt Selected role instructions
+     * @param fileTagPaths Selected file references
+     * @param requestedPermissionMode Requested permission mode
+     * @param requestedReasoningEffort Requested reasoning effort
+     * @param requestedCodexFastMode Requested Codex service tier
+     * @param requestedDshPreset Requested DSH preset
+     * @param clientMessageId Stable optimistic-message identity
+     * @param nativeCodexSettings Filtered native Codex settings
+     * @param expectedTurnOwner Turn ownership marker expected to remain active
+     * @return future completed after the provider turn has finished
+     */
+    public CompletableFuture<Void> sendMessageToProvider(
+            String channelId, String input, List<ClaudeSession.Attachment> attachments, JsonObject openedFilesJson,
+            String externalAgentPrompt, List<String> fileTagPaths, String requestedPermissionMode,
+            String requestedReasoningEffort, String requestedCodexFastMode, String requestedDshPreset,
+            String clientMessageId, JsonObject nativeCodexSettings, Boolean requestedClaudeUltracode
+    ) {
+        return sendMessageToProvider(channelId, input, attachments, openedFilesJson, externalAgentPrompt, fileTagPaths,
+                requestedPermissionMode, requestedReasoningEffort, requestedCodexFastMode, requestedDshPreset,
+                null, clientMessageId, nativeCodexSettings, requestedClaudeUltracode, state.getTurnOwner());
+    }
+
+    /** Retains both the submitted workflow selection and its upstream execution owner. */
+    public CompletableFuture<Void> sendMessageToProvider(
+            String channelId, String input, List<ClaudeSession.Attachment> attachments, JsonObject openedFilesJson,
+            String externalAgentPrompt, List<String> fileTagPaths, String requestedPermissionMode,
+            String requestedReasoningEffort, String requestedCodexFastMode, String requestedDshPreset,
+            String requestedOmpApprovalMode, String clientMessageId, JsonObject nativeCodexSettings,
+            Boolean requestedClaudeUltracode, Object expectedTurnOwner
+    ) {
+        if (!state.isCurrentTurn(expectedTurnOwner)) {
+            return CompletableFuture.completedFuture(null);
+        }
         String agentPrompt = externalAgentPrompt;
         if (agentPrompt == null) {
             agentPrompt = getAgentPrompt();
@@ -224,6 +309,15 @@ public class SessionSendService {
         }
 
         String currentProvider = state.getProvider();
+        // Claude's persistent runtime receives the stable append once when it is
+        // created; subsequent turns reuse it. Changing the append restarts the runtime,
+        // which fails while background tasks run, so it is latched as soon as the
+        // feature is enabled rather than on the first review. Other providers use their
+        // existing hidden agent-context path only on turns containing review snapshots.
+        boolean restoredReviews = "claude".equals(currentProvider) && !markdownReviewContext.isActiveFor(state.getRuntimeSessionEpoch())
+                && (markdownReviewsEnabled() || state.getMessages().stream().anyMatch(message ->
+                message.type == ClaudeSession.Message.Type.USER && MarkdownReviewPrompt.hasReview(message.content)));
+        agentPrompt = markdownReviewContext.apply(currentProvider, input, agentPrompt, state.getRuntimeSessionEpoch(), restoredReviews);
         String sessionModeBeforeSend = state.getPermissionMode();
         String normalizedRequestedMode = normalizeRequestedPermissionMode(requestedPermissionMode);
         String effectivePermissionMode = resolveEffectivePermissionMode(
@@ -257,11 +351,12 @@ public class SessionSendService {
                     normalizedRequestedEffort,
                     effectiveCodexServiceTier,
                     clientMessageId,
-                    nativeCodexSettings
+                    nativeCodexSettings,
+                    expectedTurnOwner
             );
         }
 
-        if ("grok".equals(currentProvider) && grokSDKBridge != null) {
+        if (PROVIDER_GROK.equals(currentProvider) && grokSDKBridge != null) {
             return sendToGrok(
                     channelId,
                     input,
@@ -270,10 +365,11 @@ public class SessionSendService {
                     agentPrompt,
                     fileTagPaths,
                     effectivePermissionMode,
-                    normalizedRequestedEffort
+                    normalizedRequestedEffort,
+                    expectedTurnOwner
             );
         }
-        if ("zcode".equals(currentProvider) && zcodeSDKBridge != null) {
+        if (PROVIDER_ZCODE.equals(currentProvider) && zcodeSDKBridge != null) {
             return sendToZcode(
                     channelId,
                     input,
@@ -282,13 +378,17 @@ public class SessionSendService {
                     agentPrompt,
                     fileTagPaths,
                     effectivePermissionMode,
-                    normalizedRequestedEffort
+                    normalizedRequestedEffort,
+                    expectedTurnOwner
             );
         }
 
-        if (cliBridges.containsKey(currentProvider) && !"grok".equals(currentProvider)) {
+        if (cliBridges.containsKey(currentProvider) && !isDedicatedSdkProvider(currentProvider)) {
             if ("dsh".equals(currentProvider) && requestedDshPreset != null) {
                 state.setDshPreset(requestedDshPreset);
+            }
+            if ("omp".equals(currentProvider) && requestedOmpApprovalMode != null) {
+                state.setOmpApprovalMode(requestedOmpApprovalMode);
             }
             return sendToCliProvider(
                     currentProvider,
@@ -299,12 +399,38 @@ public class SessionSendService {
                     agentPrompt,
                     fileTagPaths,
                     normalizedRequestedEffort,
-                    effectivePermissionMode
+                    effectivePermissionMode,
+                    requestedOmpApprovalMode,
+                    expectedTurnOwner
             );
         }
 
+        // Registered CLI tool whose bridge is not registered: fail loudly via
+        // the channel error path instead of silently routing the turn to the
+        // Claude SDK. Grok and ZCode keep their historic fallthrough when their
+        // bridges are missing.
+        CliToolId cliTool = !isDedicatedSdkProvider(currentProvider)
+                ? CliToolId.fromId(currentProvider)
+                : null;
+        if (cliTool != null && !cliBridges.containsKey(currentProvider)) {
+            LOG.warn("[Lifecycle] provider=" + currentProvider
+                    + " has no CLI bridge; rejecting send instead of falling through to claude");
+            MessageCallback handler = createCliMessageHandler(currentProvider, expectedTurnOwner);
+            handler.onError(ClaudeCodeGuiBundle.message(
+                    "error.cliProviderNotImplemented",
+                    cliTool.getDisplayName()
+            ));
+            return CompletableFuture.completedFuture(null);
+        }
+
         return sendToClaude(channelId, input, attachments, openedFilesJson, agentPrompt,
-                effectivePermissionMode, normalizedRequestedEffort);
+                effectivePermissionMode, normalizedRequestedEffort,
+                requestedClaudeUltracode != null ? requestedClaudeUltracode : state.isClaudeUltracode(),
+                expectedTurnOwner);
+    }
+
+    private static boolean isDedicatedSdkProvider(String provider) {
+        return PROVIDER_GROK.equals(provider) || PROVIDER_ZCODE.equals(provider);
     }
 
     public static String normalizeRequestedReasoningEffort(String effort) {
@@ -320,6 +446,15 @@ public class SessionSendService {
         }
         LOG.warn("[ReasoningEffort][Backend] Invalid requested reasoningEffort ignored: " + effort);
         return null;
+    }
+
+    public static String resolveEffectiveReasoningEffort(String provider, String requested, String session) {
+        String effort = normalizeRequestedReasoningEffort(requested);
+        if (effort == null) {
+            effort = normalizeRequestedReasoningEffort(session);
+        }
+        // Native ultra is a Codex effort, while Claude uses its independent ultracode flag.
+        return "ultra".equals(effort) && !"codex".equals(provider) ? null : effort;
     }
 
     public static String normalizeRequestedPermissionMode(String mode) {
@@ -340,6 +475,14 @@ public class SessionSendService {
         return null;
     }
 
+    /**
+     * Resolves the effective permission mode for a turn, normalizing modes unsupported by the target provider.
+     *
+     * @param provider Active provider identifier
+     * @param requestedMode Explicitly requested permission mode for the turn, or null
+     * @param sessionMode Current session permission mode fallback, or null
+     * @return effective permission mode for the provider turn
+     */
     public static String resolveEffectivePermissionMode(String provider, String requestedMode, String sessionMode) {
         String resolvedMode = requestedMode;
         if (resolvedMode == null) {
@@ -348,17 +491,22 @@ public class SessionSendService {
         if (resolvedMode == null) {
             resolvedMode = "default";
         }
+        if ("sandbox".equals(resolvedMode) && !PROVIDER_GEMINI.equals(provider)) {
+            return "default";
+        }
 
         boolean isProviderWithoutPlanMode = "grok".equals(provider)
                 || "zcode".equals(provider)
-                || (SessionProviderRouter.isCliProvider(provider) && !"omp".equals(provider));
+                || (SessionProviderRouter.isCliProvider(provider)
+                        && !"omp".equals(provider) && !PROVIDER_GEMINI.equals(provider));
         boolean isCliProviderWithoutNativeAuto = SessionProviderRouter.isCliProvider(provider);
         // Grok and ZCode run as full SDK bridges (not MarkerCli providers, so they
         // are absent from CLI_PROVIDER_IDS), but like the headless CLI providers
         // they have no plan-mode equivalent — so plan still downgrades to default.
         // EXCEPT omp, where "plan" is a model role (`omp --model plan`), not Claude
-        // plan mode. Codex owns its native collaboration mode in app-server;
-        // native auto review is limited to Claude/Codex; Grok retains its
+        // plan mode. Codex owns its native collaboration mode in app-server.
+        // Gemini keeps plan: its CLI supports plan/read-only (`agy --mode plan`).
+        // Native auto review is limited to Claude/Codex; Grok retains its
         // existing internal auto-approve alias, while the Webview still hides auto there.
         if (isProviderWithoutPlanMode
                 && "plan".equals(resolvedMode)) {
@@ -434,10 +582,11 @@ public class SessionSendService {
             String requestedReasoningEffort,
             String effectiveCodexServiceTier,
             String clientMessageId,
-            JsonObject nativeCodexSettings
+            JsonObject nativeCodexSettings,
+            Object expectedTurnOwner
     ) {
         CodexMessageHandler handler = new CodexMessageHandler(this.state,
-                this.callbackFacade.getCallbackHandler(), clientMessageId);
+                this.callbackFacade.getCallbackHandler(), clientMessageId, expectedTurnOwner);
         String accessMode = CodemossSettingsService.CODEX_RUNTIME_ACCESS_INACTIVE;
         try {
             accessMode = new CodemossSettingsService().getCodexRuntimeAccessMode();
@@ -446,17 +595,20 @@ public class SessionSendService {
         }
 
         String accessError = getCodexRuntimeAccessError(accessMode);
-        if (accessError != null) {
+        if (accessError != null && !codexSDKBridge.hasSessionSupplier()) {
             handler.onError(accessError);
             return CompletableFuture.completedFuture(null);
         }
 
         JsonObject turnSettings = nativeCodexSettings == null ? new JsonObject() : nativeCodexSettings.deepCopy();
-        turnSettings.add("additionalContext", this.contextService.buildCodexAdditionalContext(openedFilesJson, fileTagPaths));
+        turnSettings.add("additionalContext", this.contextService.buildCodexAdditionalContext(
+                openedFilesJson, fileTagPaths, this.codexSDKBridge::normalizePathForNode));
         String sessionInstructions = this.contextService.buildCodexSessionInstructions(agentPrompt, openedFilesJson);
-        String configuredModel = new CodexSettingsManager(this.gson).resolveModelAlias(this.state.getModel());
+        String supplier = this.state.getRuntimeSupplierId("codex");
+        String configuredModel = codexSDKBridge.hasSessionSupplier() && !SessionSupplierCatalog.isNativeMode(supplier) ? this.state.getModel()
+                : new CodexSettingsManager(this.gson).resolveModelAlias(this.state.getModel());
 
-        return this.codexSDKBridge.sendMessage(
+        return settleFromResult(expectedTurnOwner, codexSDKBridge.sendMessage(
                 channelId,
                 input != null ? input : "",
                 this.state.getSessionId(),
@@ -470,7 +622,16 @@ public class SessionSendService {
                 handler,
                 clientMessageId,
                 turnSettings
-        ).thenApply(result -> null);
+        ));
+    }
+
+    /** Provider handlers differ in bookkeeping; the result future settles every route the same way. */
+    private CompletableFuture<Void> settleFromResult(Object expectedTurnOwner, CompletableFuture<SDKResult> backend) {
+        SessionExecutionOwnership execution = state.executionOwnershipForOwner(expectedTurnOwner);
+        if (execution != null) {
+            execution.bindResult(backend);
+        }
+        return backend.thenApply(result -> null);
     }
 
     private CompletableFuture<Void> sendToGrok(
@@ -481,14 +642,16 @@ public class SessionSendService {
             String agentPrompt,
             List<String> fileTagPaths,
             String effectivePermissionMode,
-            String requestedReasoningEffort
+            String requestedReasoningEffort,
+            Object expectedTurnOwner
     ) {
         if (grokSDKBridge == null) {
             LOG.error("[Lifecycle] sendToGrok called but GrokSDKBridge is null");
             callbackFacade.notifyStateChange(false, false, "Grok bridge not available");
             return CompletableFuture.completedFuture(null);
         }
-        GrokMessageHandler handler = new GrokMessageHandler(state, callbackFacade.getCallbackHandler());
+        GrokMessageHandler handler = new GrokMessageHandler(state, callbackFacade.getCallbackHandler(),
+                new GrokUsageLedger(), expectedTurnOwner);
         Boolean streaming = readStreamingEnabled();
         final String runtimeSessionEpoch = state.getRuntimeSessionEpoch();
         final String currentModel = state.getModel();
@@ -507,7 +670,7 @@ public class SessionSendService {
                 + ", model=" + currentModel
                 + ", fileTags=" + (fileTagPaths != null ? fileTagPaths.size() : 0));
 
-        return grokSDKBridge.sendMessage(
+        return settleFromResult(expectedTurnOwner, grokSDKBridge.sendMessage(
                 channelId,
                 input,
                 state.getSessionId(),
@@ -520,9 +683,9 @@ public class SessionSendService {
                 agentPrompt,
                 streaming,
                 false,
-                requestedReasoningEffort != null ? requestedReasoningEffort : state.getReasoningEffort(),
+                resolveEffectiveReasoningEffort("grok", requestedReasoningEffort, state.getReasoningEffort()),
                 handler
-        ).thenApply(result -> null);
+        ));
     }
 
     private CompletableFuture<Void> sendToZcode(
@@ -533,14 +696,16 @@ public class SessionSendService {
             String agentPrompt,
             List<String> fileTagPaths,
             String effectivePermissionMode,
-            String requestedReasoningEffort
+            String requestedReasoningEffort,
+            Object expectedTurnOwner
     ) {
         if (zcodeSDKBridge == null) {
             LOG.error("[Lifecycle] sendToZcode called but ZcodeSDKBridge is null");
             callbackFacade.notifyStateChange(false, false, "ZCode bridge not available");
             return CompletableFuture.completedFuture(null);
         }
-        ZcodeMessageHandler handler = new ZcodeMessageHandler(state, callbackFacade.getCallbackHandler());
+        ZcodeMessageHandler handler = new ZcodeMessageHandler(state, callbackFacade.getCallbackHandler(),
+                expectedTurnOwner);
         Boolean streaming = readStreamingEnabled();
         final String runtimeSessionEpoch = state.getRuntimeSessionEpoch();
         final String currentModel = state.getModel();
@@ -559,7 +724,7 @@ public class SessionSendService {
                 + ", model=" + currentModel
                 + ", fileTags=" + (fileTagPaths != null ? fileTagPaths.size() : 0));
 
-        return zcodeSDKBridge.sendMessage(
+        return settleFromResult(expectedTurnOwner, zcodeSDKBridge.sendMessage(
                 channelId,
                 input,
                 state.getSessionId(),
@@ -572,12 +737,15 @@ public class SessionSendService {
                 agentPrompt,
                 streaming,
                 false,
-                requestedReasoningEffort != null ? requestedReasoningEffort : state.getReasoningEffort(),
+                resolveEffectiveReasoningEffort("zcode", requestedReasoningEffort, state.getReasoningEffort()),
                 handler
-        ).thenApply(result -> null);
+        ));
     }
 
-    private CompletableFuture<Void> sendToCliProvider(
+    // Package-private (not private) so the forwarded argument tuple is pinned
+    // by a test: swapping the adjacent cwd/requestedCwd positionals must fail
+    // there instead of silently inverting the substitution notice.
+    CompletableFuture<Void> sendToCliProvider(
             String provider,
             String channelId,
             String input,
@@ -588,16 +756,35 @@ public class SessionSendService {
             String requestedReasoningEffort,
             String permissionMode
     ) {
+        return sendToCliProvider(
+                provider, channelId, input, attachments, openedFilesJson,
+                agentPrompt, fileTagPaths, requestedReasoningEffort,
+                permissionMode, null, state.getTurnOwner());
+    }
+
+    CompletableFuture<Void> sendToCliProvider(
+            String provider,
+            String channelId,
+            String input,
+            List<ClaudeSession.Attachment> attachments,
+            JsonObject openedFilesJson,
+            String agentPrompt,
+            List<String> fileTagPaths,
+            String requestedReasoningEffort,
+            String permissionMode,
+            String requestedOmpApprovalMode,
+            Object expectedTurnOwner
+    ) {
         MarkerCliBridge bridge = cliBridges.get(provider);
         if (bridge == null) {
-            MessageCallback missingHandler = createCliMessageHandler(provider);
+            MessageCallback missingHandler = createCliMessageHandler(provider, expectedTurnOwner);
             missingHandler.onError("CLI provider not registered: " + provider);
             return CompletableFuture.completedFuture(null);
         }
 
         // Grok has a dedicated handler (multi-turn assistant ownership + no user-echo
         // dupes). Other CLI providers reuse Codex streaming marker handling.
-        MessageCallback handler = createCliMessageHandler(provider);
+        MessageCallback handler = createCliMessageHandler(provider, expectedTurnOwner);
 
         String contextAppend = this.contextService.buildLegacyContextAppend(openedFilesJson, fileTagPaths);
         String finalInput = (input != null ? input : "") + contextAppend;
@@ -608,6 +795,7 @@ public class SessionSendService {
         }
 
         String effort = normalizeCliReasoningEffort(
+                provider,
                 requestedReasoningEffort != null ? requestedReasoningEffort : state.getReasoningEffort()
         );
         String modelForCli = normalizeCliModelForProvider(provider, state.getModel());
@@ -615,11 +803,42 @@ public class SessionSendService {
                 ? permissionMode
                 : "default";
         Boolean thinking = readThinkingEnabled();
+        // The mode travels with its message, so a later send cannot change it while this
+        // one is still starting. A send that states none (Quick Fix) uses the tab's choice.
+        String ompApprovalMode = requestedOmpApprovalMode != null
+                ? SessionState.normalizeOmpApprovalMode(requestedOmpApprovalMode)
+                : state.getOmpApprovalMode();
         int attachmentCount = attachments != null ? attachments.size() : 0;
+
+        // Clamp the workspace to the project base before spawn — the same guard
+        // the grok send path applies. A cwd outside the project (or a sentinel)
+        // must never reach the CLI as the agent workspace. The PRE-clamp value is
+        // forwarded as `requestedCwd` so the Node side can surface a visible
+        // substitution notice (AC5) — the clamp itself erases that difference.
+        //
+        // Scoped to GEMINI only (review loop 3 decision): the clamp + notice are
+        // new in Story 1.2, and the sibling CLI providers neither read
+        // requestedCwd nor emit the notice — clamping them here would change
+        // their behavior silently. A family-wide clamp is a separate follow-up
+        // (one fix per PR).
+        String projectBase = project != null ? project.getBasePath() : null;
+        boolean cwdGuardApplies = PROVIDER_GEMINI.equals(provider);
+        String requestedCwd = cwdGuardApplies ? state.getCwd() : null;
+        String guardedCwd = cwdGuardApplies ? resolveCliSendCwd(requestedCwd, projectBase) : state.getCwd();
+        if (cwdGuardApplies) {
+            if (projectBase == null || projectBase.isEmpty()) {
+                LOG.warn("[Lifecycle] sendToCli cwd guard (" + provider + "): no project base"
+                        + " available; passing raw cwd through: " + guardedCwd);
+            } else if (guardedCwd == null || requestedCwd == null || !guardedCwd.equals(requestedCwd)) {
+                LOG.warn("[Lifecycle] sendToCli cwd guard (" + provider + "): "
+                        + requestedCwd + " -> " + guardedCwd);
+                state.setCwd(guardedCwd);
+            }
+        }
 
         LOG.info("[Lifecycle] sendToCli provider=" + provider
                 + " sessionId=" + (state.getSessionId() != null ? state.getSessionId() : "(new)")
-                + ", cwd=" + state.getCwd()
+                + ", cwd=" + guardedCwd
                 + ", modelRaw=" + state.getModel()
                 + ", modelCli=" + (modelForCli != null ? modelForCli : "(config-default)")
                 + ", effort=" + effort
@@ -627,19 +846,21 @@ public class SessionSendService {
                 + ", thinking=" + (thinking == null || thinking)
                 + ", attachments=" + attachmentCount);
 
-        return bridge.sendMessage(
+        return settleFromResult(expectedTurnOwner, bridge.sendMessage(
                 channelId,
                 finalInput,
                 state.getSessionId(),
-                state.getCwd(),
+                guardedCwd,
                 modelForCli != null ? modelForCli : "",
                 effort,
                 attachments,
                 effectiveMode,
                 "dsh".equals(provider) ? state.getDshPreset() : null,
+                "omp".equals(provider) ? ompApprovalMode : null,
                 thinking,
+                requestedCwd,
                 handler
-        ).thenApply(result -> null);
+        ));
     }
 
     /**
@@ -662,26 +883,46 @@ public class SessionSendService {
     }
 
     /**
+     * Workspace a CLI-provider turn runs in: clamped to the project base when
+     * one exists, passed through unchanged when it does not (no anchor to clamp
+     * to — the raw cwd is kept and the caller logs the degraded guard).
+     *
+     * <p>Static so the clamp decision is pinned by tests
+     * ({@code SessionSendServiceTest}) rather than only observable live.
+     */
+    static String resolveCliSendCwd(String cwd, String projectBase) {
+        String guarded = com.github.claudecodegui.util.PathUtils.guardWorkingDirectory(cwd, projectBase);
+        return guarded != null ? guarded : cwd;
+    }
+
+    /**
      * Build the marker-stream callback for a CLI provider.
      * Grok uses {@link GrokMessageHandler} so each stream owns a dedicated assistant
      * bubble and ACP user echoes never re-append the send-time user message.
      */
-    MessageCallback createCliMessageHandler(String provider) {
+    MessageCallback createCliMessageHandler(String provider, Object expectedTurnOwner) {
         CallbackHandler callbacks = callbackFacade.getCallbackHandler();
         if ("grok".equals(provider)) {
-            return new GrokMessageHandler(state, callbacks);
+            return new GrokMessageHandler(state, callbacks, new GrokUsageLedger(), expectedTurnOwner);
         }
         if ("zcode".equals(provider)) {
-            return new ZcodeMessageHandler(state, callbacks);
+            return new ZcodeMessageHandler(state, callbacks, expectedTurnOwner);
         }
-        return new CodexMessageHandler(state, callbacks);
+        return new CodexMessageHandler(state, callbacks, null, expectedTurnOwner);
     }
 
-    static String normalizeCliReasoningEffort(String effort) {
-        if (effort == null) {
-            return "medium";
+    /**
+     * Map the UI effort onto the CLI flag value.
+     *
+     * <p>OMP accepts every UI level as {@code --thinking}, and an empty result
+     * omits the flag so the model keeps the level from OMP's own config. The
+     * other CLI providers only know low/medium/high and default to medium.
+     */
+    static String normalizeCliReasoningEffort(String provider, String effort) {
+        String normalized = effort == null ? "" : effort.trim().toLowerCase();
+        if ("omp".equals(provider)) {
+            return SessionState.isValidReasoningEffort(normalized) ? normalized : "";
         }
-        String normalized = effort.trim().toLowerCase();
         if ("low".equals(normalized) || "medium".equals(normalized) || "high".equals(normalized)) {
             return normalized;
         }
@@ -714,8 +955,14 @@ public class SessionSendService {
         }
         // Leftovers after a provider switch without model reset. OpenCode
         // legitimately supports OpenAI models, so gpt-* is only filtered for
-        // the other CLI providers.
-        if (lower.startsWith("claude-") || (lower.startsWith("gpt-") && !"opencode".equals(provider))) {
+        // the other CLI providers. Gemini (agy) is exempt too: its live
+        // catalog contains cross-vendor slugs (claude-sonnet-4-6,
+        // claude-opus-4-6-thinking, gpt-oss-120b-medium) the user can really
+        // pick — stripping them would silently run the CLI default instead of
+        // the selected model.
+        boolean isGemini = PROVIDER_GEMINI.equals(provider);
+        if ((lower.startsWith("claude-") && !isGemini)
+                || (lower.startsWith("gpt-") && !"opencode".equals(provider) && !isGemini)) {
             LOG.warn("[" + provider + "] Ignoring non-provider model leftover for CLI: " + trimmed);
             return null;
         }
@@ -744,7 +991,9 @@ public class SessionSendService {
             JsonObject openedFilesJson,
             String agentPrompt,
             String effectivePermissionMode,
-            String requestedReasoningEffort
+            String requestedReasoningEffort,
+            boolean claudeUltracode,
+            Object expectedTurnOwner
     ) {
         ClaudeMessageHandler handler = new ClaudeMessageHandler(
                 project,
@@ -752,7 +1001,9 @@ public class SessionSendService {
                 callbackFacade.getCallbackHandler(),
                 messageParser,
                 messageMerger,
-                gson
+                gson,
+                null,
+                expectedTurnOwner
         );
 
         Boolean streaming = readStreamingEnabled();
@@ -763,7 +1014,7 @@ public class SessionSendService {
                 + ", cwd=" + state.getCwd()
                 + ", model=" + currentModel);
 
-        return claudeSDKBridge.sendMessage(
+        return settleFromResult(expectedTurnOwner, claudeSDKBridge.sendMessage(
                         channelId,
                         input,
                         state.getSessionId(),
@@ -776,9 +1027,10 @@ public class SessionSendService {
                         agentPrompt,
                         streaming,
                         false,
-                        requestedReasoningEffort != null ? requestedReasoningEffort : state.getReasoningEffort(),
+                        resolveEffectiveReasoningEffort("claude", requestedReasoningEffort, state.getReasoningEffort()),
+                        claudeUltracode,
                         handler
-                ).thenApply(result -> null);
+                ));
     }
 
     private boolean readAutoOpenFileEnabled() {
@@ -809,6 +1061,12 @@ public class SessionSendService {
             LOG.warn("[Streaming] Failed to read streaming config: " + e.getMessage());
         }
         return streaming;
+    }
+
+    private boolean markdownReviewsEnabled() {
+        MarkdownReviewService reviews = project == null || project.isDisposed()
+                ? null : project.getService(MarkdownReviewService.class);
+        return reviews != null && reviews.getConfig().enabled;
     }
 
     private String getAgentPrompt() {

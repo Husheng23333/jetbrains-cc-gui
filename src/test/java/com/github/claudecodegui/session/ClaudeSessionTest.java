@@ -4,8 +4,10 @@ import com.github.claudecodegui.provider.codex.CodexSDKBridge;
 import com.github.claudecodegui.provider.common.MessageCallback;
 import com.github.claudecodegui.provider.common.SDKResult;
 import com.github.claudecodegui.permission.PermissionManager;
+import org.junit.After;
 import org.junit.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
@@ -17,10 +19,147 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class ClaudeSessionTest {
+    private final List<ClaudeSession> sessions = new ArrayList<>();
+
+    @After
+    public void retireTestSessionActivity() {
+        // Later storage suites must not depend on GC to retire simulated busy sessions.
+        for (ClaudeSession session : sessions) {
+            session.getState().setBusy(false);
+            session.getState().getExecutionState().rebind();
+        }
+    }
+
+    private ClaudeSession createSession(CodexSDKBridge bridge) {
+        ClaudeSession session = new ClaudeSession(null, null, bridge, null);
+        sessions.add(session);
+        return session;
+    }
+
+    @Test
+    public void executionCancellationRequiresProviderAcknowledgement() throws Exception {
+        BlockingCodexBridge bridge = new BlockingCodexBridge(false);
+        ClaudeSession session = createSession(bridge);
+        session.setProvider("codex");
+        session.getState().setChannelId("stop-channel");
+        session.getState().beginTurn();
+        CodexMessageHandler handler = new CodexMessageHandler(session.getState(), new CallbackHandler());
+        java.util.concurrent.CompletableFuture<Void> stop = session.interrupt();
+        assertTrue(bridge.awaitInterrupt());
+        assertEquals(SessionExecutionState.Phase.STOPPING, session.getState().getExecutionSnapshot().phase());
+        handler.onError("Process interrupted during stop");
+        assertEquals(SessionExecutionState.Outcome.NONE, session.getState().getExecutionSnapshot().outcome());
+        bridge.releaseInterrupt();
+        stop.join();
+        assertEquals(SessionExecutionState.Outcome.NONE, session.getState().getExecutionSnapshot().outcome());
+        SDKResult confirmed = SDKResult.error("Process terminated");
+        confirmed.cancelled = true;
+        handler.onComplete(confirmed);
+        assertEquals(SessionExecutionState.Outcome.CANCELLED, session.getState().getExecutionSnapshot().outcome());
+    }
+
+    @Test
+    public void failedInterruptDoesNotClaimCancellation() {
+        BlockingCodexBridge bridge = new BlockingCodexBridge(true);
+        ClaudeSession session = createSession(bridge);
+        session.setProvider("codex");
+        session.getState().setChannelId("failing-stop-channel");
+        session.getState().beginTurn();
+        try {
+            session.interrupt().join();
+            throw new AssertionError("Expected failed interrupt");
+        } catch (CompletionException expected) {
+            assertEquals(SessionExecutionState.Phase.UNKNOWN, session.getState().getExecutionSnapshot().phase());
+            assertEquals(SessionExecutionState.Outcome.NONE, session.getState().getExecutionSnapshot().outcome());
+        }
+    }
+
+    @Test
+    public void interruptTargetsTheNativeClaudeRuntimeEvenBetweenForegroundTurns() throws Exception {
+        String[] target = new String[3];
+        var bridge = new com.github.claudecodegui.provider.claude.ClaudeSDKBridge() {
+            @Override
+            public void interruptChannel(String channelId, String sessionId, String epoch) {
+                target[0] = channelId;
+                target[1] = sessionId;
+                target[2] = epoch;
+            }
+
+            @Override
+            public void interruptChannel(String channelId) {
+                throw new AssertionError("A keyless abort could stop a different native runtime");
+            }
+        };
+        ClaudeSession session = new ClaudeSession(null, bridge, null, null);
+        session.setSessionInfo("workflow-session", "/workspace");
+        session.getState().setChannelId("workflow-channel");
+        String epoch = session.getRuntimeSessionEpoch();
+        SessionExecutionState.Snapshot executionBeforeStop = session.getState().getExecutionSnapshot();
+        assertFalse(session.isBusy());
+        session.interrupt().get(5, TimeUnit.SECONDS);
+        assertEquals("workflow-channel", target[0]);
+        assertEquals("workflow-session", target[1]);
+        assertEquals(epoch, target[2]);
+        assertEquals(executionBeforeStop, session.getState().getExecutionSnapshot());
+        assertFalse(session.getState().getExecutionState().hasLiveTurn());
+    }
+
+    @Test
+    public void claudeStopControlAckWaitsForTheOriginalSendCancellationResult() throws Exception {
+        BlockingClaudeBridge bridge = new BlockingClaudeBridge();
+        ClaudeSession session = new ClaudeSession(null, bridge, null, null);
+        sessions.add(session);
+        session.setSessionInfo("native-session", "/workspace");
+        session.getState().setChannelId("native-channel");
+        session.getState().beginTurn();
+        ClaudeMessageHandler handler = new ClaudeMessageHandler(null, session.getState(), new CallbackHandler(),
+                new MessageParser(), new MessageMerger(), new com.google.gson.Gson());
+
+        var stop = session.interrupt();
+        assertTrue(bridge.interruptStarted.await(5, TimeUnit.SECONDS));
+        assertEquals(SessionExecutionState.Phase.STOPPING, session.getState().getExecutionSnapshot().phase());
+        bridge.interruptRelease.countDown();
+        stop.get(5, TimeUnit.SECONDS);
+        assertEquals(SessionExecutionState.Outcome.NONE, session.getState().getExecutionSnapshot().outcome());
+        assertEquals(SessionExecutionState.Phase.UNKNOWN, session.getState().getExecutionSnapshot().phase());
+
+        SDKResult cancelled = SDKResult.error("Native turn cancelled");
+        cancelled.cancelled = true;
+        handler.onComplete(cancelled);
+        assertEquals(SessionExecutionState.Outcome.CANCELLED, session.getState().getExecutionSnapshot().outcome());
+    }
+
+    @Test
+    public void delayedIdleClaudeStopCannotSettleANewerForegroundTurn() throws Exception {
+        BlockingClaudeBridge bridge = new BlockingClaudeBridge();
+        ClaudeSession session = new ClaudeSession(null, bridge, null, null);
+        sessions.add(session);
+        session.setSessionInfo("workflow-session", "/workspace");
+        session.getState().setChannelId("workflow-channel");
+        session.getState().beginTurn();
+        ClaudeMessageHandler previous = new ClaudeMessageHandler(null, session.getState(), new CallbackHandler(),
+                new MessageParser(), new MessageMerger(), new com.google.gson.Gson());
+        previous.onComplete(SDKResult.success("Foreground complete; background workflow continues"));
+        assertFalse(session.isBusy());
+
+        var stop = session.interrupt();
+        assertTrue(bridge.interruptStarted.await(5, TimeUnit.SECONDS));
+        session.getState().beginTurn();
+        SessionExecutionState.Snapshot nextTurn = session.getState().getExecutionSnapshot();
+        bridge.interruptRelease.countDown();
+        stop.get(5, TimeUnit.SECONDS);
+        SDKResult cancelled = SDKResult.error("Old native runtime cancelled");
+        cancelled.cancelled = true;
+        previous.onComplete(cancelled);
+
+        assertEquals(nextTurn, session.getState().getExecutionSnapshot());
+        assertTrue(session.isBusy());
+        assertTrue(session.getState().isLoading());
+    }
 
     @Test
     public void setSessionInfoNotifiesSessionIdWhenRestoringHistorySession() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
         RecordingCallback callback = new RecordingCallback();
         session.setCallback(callback);
 
@@ -33,7 +172,7 @@ public class ClaudeSessionTest {
 
     @Test
     public void hasNoTurnStartTimestampBeforeFirstSubmission() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
 
         assertEquals(0L, session.getLastTurnStartedAtMillis());
     }
@@ -41,7 +180,7 @@ public class ClaudeSessionTest {
     /** Restored Codex controls and the next send share their existing default runtime. */
     @Test
     public void restoredCodexKeepsItsControlChannelBeforeFirstSend() throws Exception {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
         session.setProvider("codex");
         session.setSessionInfo("restored-root", "/workspace/demo");
 
@@ -55,7 +194,7 @@ public class ClaudeSessionTest {
     /** A new Codex chat still defers allocating its normal send channel. */
     @Test
     public void emptyCodexSessionDoesNotClaimARestoredControlChannel() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
         session.setProvider("codex");
         session.setSessionInfo(null, "/workspace/demo");
         assertNull(session.getChannelId());
@@ -64,7 +203,7 @@ public class ClaudeSessionTest {
     @Test
     public void interruptDoesNotResetAReplacementChannel() throws Exception {
         BlockingCodexBridge bridge = new BlockingCodexBridge(false);
-        ClaudeSession session = new ClaudeSession(null, null, bridge, null);
+        ClaudeSession session = createSession(bridge);
         session.setProvider("codex");
         session.getState().setChannelId("old-channel");
         session.getState().setBusy(true);
@@ -86,7 +225,7 @@ public class ClaudeSessionTest {
     @Test
     public void delayedInterruptDoesNotResetNextTurnOnSameChannel() throws Exception {
         BlockingCodexBridge bridge = new BlockingCodexBridge(false);
-        ClaudeSession session = new ClaudeSession(null, null, bridge, null);
+        ClaudeSession session = createSession(bridge);
         session.setProvider("codex");
         session.getState().setChannelId("shared-channel");
         session.getState().beginTurn();
@@ -105,7 +244,7 @@ public class ClaudeSessionTest {
 
     @Test
     public void endingControlWaitingClearsWaitingStateWhenNoSendInterleaved() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
 
         session.setCodexControlWaiting(true);
         assertTrue(session.isBusy());
@@ -118,7 +257,7 @@ public class ClaudeSessionTest {
 
     @Test
     public void endingControlWaitingKeepsTheLiveSendState() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
         session.setCodexControlWaiting(true);
 
         // The user sends while the control operation runs; its beginTurn owns
@@ -140,7 +279,7 @@ public class ClaudeSessionTest {
     /** Controls must leave an already submitted message in charge of its wait. */
     @Test
     public void controlWaitingCannotBorrowAnActiveSend() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
         session.getState().beginTurn();
         session.getState().setError("send-state");
 
@@ -155,7 +294,7 @@ public class ClaudeSessionTest {
     /** A restored control callback cannot end a message submitted after it. */
     @Test
     public void controlCallbackLeavesTheNextSendAlone() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
         MessageCallback control = session.createCodexControlCallback();
         control.onMessage("stream_start", "");
         session.getState().beginTurn();
@@ -174,10 +313,13 @@ public class ClaudeSessionTest {
     /** Restoring another chat invalidates the old control's display receiver. */
     @Test
     public void replacedSessionIgnoresOldControlCallbacks() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
         session.setCodexControlWaiting(true);
         MessageCallback control = session.createCodexControlCallback();
         session.getState().rotateRuntimeSessionEpoch();
+        assertFalse(session.isBusy());
+        assertFalse(session.isLoading());
+        session.getState().beginTurn();
         session.getState().setError("restored-state");
 
         control.onError("old-control-error");
@@ -192,7 +334,7 @@ public class ClaudeSessionTest {
     /** Restoring history must retire the old display receiver and its waiting state. */
     @Test
     public void restoredThreadIgnoresThePreviousControlsMessagesAndTerminal() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
         session.setProvider("codex");
         session.setSessionInfo("old-thread", "/workspace");
         assertTrue(session.setCodexControlWaiting(true));
@@ -221,7 +363,7 @@ public class ClaudeSessionTest {
     /** Reselecting the old thread must not revive a callback retired by history restoration. */
     @Test
     public void reselectedThreadIgnoresItsPreviousControlReceiver() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
         session.setProvider("codex");
         session.setSessionInfo("old-thread", "/workspace");
         assertTrue(session.setCodexControlWaiting(true));
@@ -243,7 +385,7 @@ public class ClaudeSessionTest {
     /** Refreshing the selected thread's metadata must preserve its live receiver. */
     @Test
     public void updatingTheSelectedThreadKeepsItsControlReceiver() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
         session.setProvider("codex");
         session.setSessionInfo("selected-thread", "/workspace");
         assertTrue(session.setCodexControlWaiting(true));
@@ -263,7 +405,7 @@ public class ClaudeSessionTest {
     @Test
     public void delayedInterruptLeavesRestoredHistoryLoading() throws Exception {
         BlockingCodexBridge bridge = new BlockingCodexBridge(false);
-        ClaudeSession session = new ClaudeSession(null, null, bridge, null);
+        ClaudeSession session = createSession(bridge);
         session.setProvider("codex");
         session.setSessionInfo("old-thread", "/workspace");
         session.getState().beginTurn();
@@ -286,7 +428,7 @@ public class ClaudeSessionTest {
     @Test(expected = CompletionException.class)
     public void interruptCompletesExceptionallyWhenProviderInterruptFails() {
         BlockingCodexBridge bridge = new BlockingCodexBridge(true);
-        ClaudeSession session = new ClaudeSession(null, null, bridge, null);
+        ClaudeSession session = createSession(bridge);
         session.setProvider("codex");
         session.getState().setChannelId("failing-channel");
 
@@ -295,7 +437,7 @@ public class ClaudeSessionTest {
 
     @Test
     public void nativeAutoKeepsResidualPermissionRequestsInteractive() {
-        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        ClaudeSession session = createSession(null);
 
         session.setPermissionMode("auto");
         assertEquals(PermissionManager.PermissionMode.DEFAULT, session.getPermissionManager().getPermissionMode());
@@ -338,6 +480,24 @@ public class ClaudeSessionTest {
 
         @Override
         public void onSummaryReceived(String summary) {
+        }
+    }
+
+    private static class BlockingClaudeBridge extends com.github.claudecodegui.provider.claude.ClaudeSDKBridge {
+        private final CountDownLatch interruptStarted = new CountDownLatch(1);
+        private final CountDownLatch interruptRelease = new CountDownLatch(1);
+
+        @Override
+        public void interruptChannel(String channelId, String sessionId, String epoch) {
+            interruptStarted.countDown();
+            try {
+                if (!interruptRelease.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("interrupt test timed out");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupt test interrupted", e);
+            }
         }
     }
 

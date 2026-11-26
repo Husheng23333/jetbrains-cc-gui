@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useOmpRoles } from './hooks/providers/useCliModels';
 import {
@@ -25,7 +25,14 @@ const App = () => {
   // Toast queue + current view drive the top-level layout regions below;
   // everything else from UIStateContext is consumed inside the extracted
   // components/hooks (same convention as ChatScreen / AppDialogs).
-  const { toasts, dismissToast, currentView, addToast } = useUIState();
+  const { toasts, dismissToast, currentView, setCurrentView, addToast } = useUIState();
+  useLayoutEffect(() => {
+    // Remount the chat input before the backend replays pending reviews.
+    // Settings replaces the chat subtree, so its input callbacks are absent.
+    const showChat = () => setCurrentView('chat');
+    window.showArtifactReviewChat = showChat;
+    return () => { if (window.showArtifactReviewChat === showChat) delete window.showArtifactReviewChat; };
+  }, [setCurrentView]);
 
   // ── Permission dialog timeout (synced with backend config) ──
   const [permissionDialogTimeoutSeconds, setPermissionDialogTimeoutSeconds] = useState(DEFAULT_PERMISSION_DIALOG_TIMEOUT_SECONDS);
@@ -70,18 +77,21 @@ const App = () => {
     findToolResult, getToolResultRaw, subagents, allSubagents, globalTodos,
     filteredFileChanges, rewindableMessages,
     subagentHistoryCtxValue, sessionIdCtxValue,
+    startupHistoryLoadState,
     chatInputRef, messagesContainerRef, messagesEndRef, inputAreaRef, isAutoScrollingRef,
     handleUndoFile, onDiscardAll, handleKeepAll,
-    handleSubmit, interruptSession, messageQueue, dequeueMessage, reorderMessageQueue,
+    handleSubmit, interruptSession, messageQueue, dequeueMessage, handleEditQueuedMessage, reorderMessageQueue,
     handleOpenRewindSelectDialog, handleNavigateToProviderSettings, wrappedHandleProviderSelect,
     createNewSession, loadHistorySession, deleteHistorySession, deleteHistorySessions,
-    exportHistorySession, toggleFavoriteSession, updateHistoryTitle, convertToCliSession,
+    exportHistorySession, toggleFavoriteSession, updateHistoryTitle,
+    regenerateHistoryTitle, convertToCliSession, regeneratingTitleSessionIds,
     showNewSessionConfirm, handleConfirmNewSession, handleCancelNewSession,
     showInterruptConfirm, handleConfirmInterrupt, handleCancelInterrupt,
     handleRewindSelect, handleRewindSelectCancel, handleRewindConfirm, handleRewindCancel,
     codexPlan, codexPlanExecutionPending, onExecuteCodexPlan, onContinueCodexPlan,
     codexCompactionPending,
     codexCompactionStartedAt,
+    codexTurnActive,
   } = useAppChatController({ model, applyHistoryModel, setPermissionDialogTimeoutSeconds });
 
   const statusPanelExpanded = !userCollapsedRef.current;
@@ -94,6 +104,9 @@ const App = () => {
         sessionTitle={sessionTitle}
         onNewSession={createNewSession}
         onUpdateHistoryTitle={updateHistoryTitle}
+        onRegenerateTitle={regenerateHistoryTitle}
+        regeneratingTitleSessionIds={regeneratingTitleSessionIds}
+        canRegenerateTitle={model.currentProvider === 'claude'}
       />
 
       {currentView === 'settings' ? (
@@ -125,6 +138,7 @@ const App = () => {
           filteredFileChanges={filteredFileChanges}
           subagentHistoryCtxValue={subagentHistoryCtxValue}
           sessionIdCtxValue={sessionIdCtxValue}
+          startupHistoryLoadState={startupHistoryLoadState}
           chatInputRef={chatInputRef}
           messagesContainerRef={messagesContainerRef}
           messagesEndRef={messagesEndRef}
@@ -158,8 +172,11 @@ const App = () => {
           activeProviderConfig={model.activeProviderConfig}
           claudeSettingsAlwaysThinkingEnabled={model.claudeSettingsAlwaysThinkingEnabled}
           reasoningEffort={model.reasoningEffort}
+          claudeUltracode={model.claudeUltracode}
+          onClaudeUltracodeChange={model.handleClaudeUltracodeChange}
           codexFastMode={model.codexFastMode}
           dshPreset={model.dshPreset}
+          ompApprovalMode={model.ompApprovalMode}
           streamingEnabledSetting={model.streamingEnabledSetting}
           sendShortcut={model.sendShortcut}
           autoOpenFileEnabled={model.autoOpenFileEnabled}
@@ -173,17 +190,20 @@ const App = () => {
           onReasoningChange={model.handleReasoningChange}
           onCodexFastModeChange={model.handleCodexFastModeChange}
           onDshPresetChange={model.handleDshPresetChange}
+          onOmpApprovalModeChange={model.handleOmpApprovalModeChange}
           onToggleThinking={model.handleToggleThinking}
           onStreamingEnabledChange={model.handleStreamingEnabledChange}
           onAutoOpenFileEnabledChange={model.handleAutoOpenFileEnabledChange}
           onLongContextChange={model.handleLongContextChange}
           messageQueue={messageQueue}
           onRemoveFromQueue={dequeueMessage}
+          onEditFromQueue={handleEditQueuedMessage}
           onReorderQueue={reorderMessageQueue}
           codexPlan={codexPlan}
           codexPlanExecutionPending={codexPlanExecutionPending}
           codexCompactionPending={codexCompactionPending}
           codexCompactionStartedAt={codexCompactionStartedAt}
+          codexTurnActive={codexTurnActive}
           onExecuteCodexPlan={onExecuteCodexPlan}
           onContinueCodexPlan={onContinueCodexPlan}
           onLoadSession={loadHistorySession}
@@ -192,6 +212,8 @@ const App = () => {
           onExportSession={exportHistorySession}
           onToggleFavorite={toggleFavoriteSession}
           onUpdateTitle={updateHistoryTitle}
+          onRegenerateTitle={regenerateHistoryTitle}
+          regeneratingTitleSessionIds={regeneratingTitleSessionIds}
           onConvertToCliSession={convertToCliSession}
         />
       )}

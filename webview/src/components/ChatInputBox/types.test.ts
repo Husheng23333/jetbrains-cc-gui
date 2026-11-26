@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AVAILABLE_MODES,
   CLAUDE_MODELS,
   DEFAULT_CLAUDE_MODEL_ID,
   isRetiredClaudeModelId,
+  isValidPermissionMode,
   normalizeClaudeModelId,
 } from './types';
 
@@ -44,6 +46,13 @@ describe('normalizeClaudeModelId', () => {
     expect(normalizeClaudeModelId('claude-opus-4-6[1m]')).toBe('claude-opus-4-6');
   });
 
+  it('moves a saved built-in Fable 5 selection to Fable 5.2', () => {
+    expect(normalizeClaudeModelId('claude-fable-5')).toBe('claude-fable-5-2');
+    expect(normalizeClaudeModelId('claude-fable-5[1m]')).toBe('claude-fable-5-2');
+    // Fable 5 is still served, so a custom model with that id is sent as-is.
+    expect(normalizeClaudeModelId('claude-fable-5', new Set(['claude-fable-5']))).toBe('claude-fable-5');
+  });
+
   it('leaves current models untouched', () => {
     for (const model of CLAUDE_MODELS) {
       expect(normalizeClaudeModelId(model.id)).toBe(model.id);
@@ -76,8 +85,34 @@ describe('isRetiredClaudeModelId', () => {
   it('does not flag live, custom, or empty ids', () => {
     expect(isRetiredClaudeModelId('claude-opus-4-6')).toBe(false);
     expect(isRetiredClaudeModelId('claude-opus-5')).toBe(false);
+    // Dropped from the built-in list but still served: no "Retired" badge.
+    expect(isRetiredClaudeModelId('claude-fable-5')).toBe(false);
     expect(isRetiredClaudeModelId('qwen3.5-plus')).toBe(false);
     expect(isRetiredClaudeModelId('')).toBe(false);
     expect(isRetiredClaudeModelId(null)).toBe(false);
+  });
+});
+
+describe('permission mode vocabulary', () => {
+  it('accepts every shared mode id including the gemini-only sandbox posture', () => {
+    for (const mode of ['default', 'plan', 'acceptEdits', 'bypassPermissions', 'smol', 'slow', 'sandbox']) {
+      expect(isValidPermissionMode(mode)).toBe(true);
+    }
+    expect(isValidPermissionMode('bogus')).toBe(false);
+    expect(isValidPermissionMode(undefined)).toBe(false);
+  });
+
+  it('derives the valid-id set from AVAILABLE_MODES with no duplicates', () => {
+    const ids = AVAILABLE_MODES.map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const mode of ['default', 'plan', 'acceptEdits', 'bypassPermissions', 'smol', 'slow', 'sandbox']) {
+      expect(ids).toContain(mode);
+    }
+  });
+
+  it('labels every mode for display — a mode without a label would render blank in the selector', () => {
+    for (const mode of AVAILABLE_MODES) {
+      expect(mode.label.length).toBeGreaterThan(0);
+    }
   });
 });

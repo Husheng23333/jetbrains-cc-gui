@@ -18,6 +18,7 @@ import com.github.claudecodegui.provider.minimax.MiniMaxCliBridge;
 import com.github.claudecodegui.provider.opencode.OpenCodeCliBridge;
 import com.github.claudecodegui.provider.pi.PiCliBridge;
 import com.github.claudecodegui.provider.omp.OmpCliBridge;
+import com.github.claudecodegui.provider.gemini.GeminiCliBridge;
 import com.github.claudecodegui.session.SessionProviderRouter;
 import com.github.claudecodegui.provider.common.DaemonBridge;
 import com.github.claudecodegui.provider.common.MessageCallback;
@@ -29,6 +30,7 @@ import com.github.claudecodegui.session.StreamMessageCoalescer;
 import com.github.claudecodegui.settings.CodemossSettingsService;
 import com.github.claudecodegui.settings.TabStateService;
 import com.github.claudecodegui.ui.ChatWindowDelegate;
+import com.github.claudecodegui.ui.DraftCacheKeys;
 import com.github.claudecodegui.ui.EditorContextTracker;
 import com.github.claudecodegui.ui.SurfaceFrameFence;
 import com.github.claudecodegui.ui.WebviewInitializer;
@@ -36,8 +38,15 @@ import com.github.claudecodegui.ui.WebviewWatchdog;
 import com.github.claudecodegui.ui.detached.DetachedChatFrame;
 import com.github.claudecodegui.ui.detached.DetachedWindowManager;
 import com.github.claudecodegui.util.HtmlLoader;
+import com.github.claudecodegui.util.JBCefBrowserFactory;
 import com.github.claudecodegui.util.JsUtils;
+import com.github.claudecodegui.util.ProjectTrust;
 import com.github.claudecodegui.util.ThemeConfigService;
+import com.github.claudecodegui.i18n.ClaudeCodeGuiBundle;
+import com.intellij.notification.Notification;
+import com.intellij.notification.NotificationAction;
+import com.intellij.notification.NotificationGroupManager;
+import com.intellij.notification.NotificationType;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -86,12 +95,15 @@ public class ClaudeChatWindow {
     private final OpenCodeCliBridge openCodeCliBridge;
     private final PiCliBridge piCliBridge;
     private final OmpCliBridge ompCliBridge;
+    private final GeminiCliBridge geminiCliBridge;
     private final MiniMaxCliBridge miniMaxCliBridge;
     private final Project project;
     private final CodemossSettingsService settingsService;
     private final HtmlLoader htmlLoader;
 
     private Content parentContent;
+    private String reviewTargetId = java.util.UUID.randomUUID().toString();
+    private boolean allowReviewRecovery;
     private String originalTabName;
     private volatile String sessionId = null;
     // Stable PermissionService routing key, assigned once at construction.
@@ -100,6 +112,8 @@ public class ClaudeChatWindow {
     // clearPermissionDecisionMemory(), both of which must reach the instance
     // the bridges actually route permission requests to.
     private String permissionServiceKey = null;
+    private boolean permissionServiceDisposed = false;
+    private String draftCacheKey = null;
 
     private volatile JBCefBrowser browser;
     // volatile: read from the daemon reader thread by the session_updated listener
@@ -111,6 +125,7 @@ public class ClaudeChatWindow {
 
     private volatile boolean disposed = false;
     private final InitialWebviewStartup initialWebviewStartup = new InitialWebviewStartup();
+    private final PendingSelectionContext pendingSelectionContext = new PendingSelectionContext();
     private volatile boolean frontendReady = false;
     private final FrontendReadyTransitionTracker frontendReadyTransitions =
             new FrontendReadyTransitionTracker();
@@ -160,7 +175,7 @@ public class ClaudeChatWindow {
     private final PendingFileReferencesBuffer pendingFileReferencesBuffer =
             new PendingFileReferencesBuffer();
     private volatile boolean slashCommandsFetched = false;
-    private final AtomicBoolean restoredHistoryLoadStarted = new AtomicBoolean(false);
+    private final RestoredHistoryLoader restoredHistoryLoader;
 
     // Shared serializer for structured bridges (Gson instances are thread-safe).
     private static final Gson GSON = new Gson();
@@ -228,14 +243,63 @@ public class ClaudeChatWindow {
         this(project, false);
     }
 
+    /**
+     * Register the bundled marker-CLI bridges (kimi, openCode, pi, omp, dsh,
+     * gemini, minimax) under their provider ids. Extracted from the constructor
+     * so a test can pin the bundled set — a provider dropped from the list (e.g.
+     * gemini) fails there instead of only surfacing as a missing CLI provider
+     * inside the IDE. Grok is not on this list: it uses {@code GrokSDKBridge}
+     * (persistent ACP / grok agent stdio), not {@link MarkerCliBridge}.
+     */
+    static Map<String, MarkerCliBridge> registerBundledCliBridges(
+            MarkerCliBridge kimi,
+            MarkerCliBridge openCode,
+            MarkerCliBridge pi,
+            MarkerCliBridge omp,
+            MarkerCliBridge gemini,
+            MarkerCliBridge miniMax
+    ) {
+        return SessionProviderRouter.registerCliBridges(kimi, openCode, pi, omp, new DshCliBridge(), gemini, miniMax);
+    }
+
+    private static void showUntrustedProjectNotice(Project project) {
+        Notification notification = NotificationGroupManager.getInstance()
+                .getNotificationGroup("CC GUI Notifications")
+                .createNotification(ClaudeCodeGuiBundle.message("notification.untrustedProject.claudeSettings"),
+                        NotificationType.WARNING);
+        if (ProjectTrust.canRequestTrust()) {
+            notification.addAction(NotificationAction.createSimpleExpiring(
+                    ClaudeCodeGuiBundle.message("notification.untrustedProject.trustAction"),
+                    () -> ProjectTrust.requestTrust(
+                            project,
+                            ClaudeCodeGuiBundle.message("notification.untrustedProject.dialogTitle"),
+                            ClaudeCodeGuiBundle.message("notification.untrustedProject.dialogMessage"),
+                            ClaudeCodeGuiBundle.message("notification.untrustedProject.dialogTrust"),
+                            ClaudeCodeGuiBundle.message("notification.untrustedProject.dialogDistrust"))));
+        }
+        notification.notify(project);
+    }
+
+    private static void showOutsideWorkingDirectoryNotice(Project project) {
+        NotificationGroupManager.getInstance()
+                .getNotificationGroup("CC GUI Notifications")
+                .createNotification(ClaudeCodeGuiBundle.message("notification.untrustedWorkingDirectory.claudeSettings"),
+                        NotificationType.WARNING)
+                .notify(project);
+    }
+
     public ClaudeChatWindow(Project project, boolean skipRegister) {
         this(project, skipRegister, true);
     }
 
-    /** Restore inactive tabs without allocating a browser until activation or remote work. */
+    /** Restore inactive tabs without allocating a browser until activation or an explicit startup request. */
     public ClaudeChatWindow(Project project, boolean skipRegister, boolean initializeWebview) {
         this.project = project;
         this.claudeSDKBridge = new ClaudeSDKBridge();
+        this.claudeSDKBridge.setProjectTrustSupplier(
+                cwd -> ProjectTrust.isTrustedForClaude(project, cwd,
+                        ClaudeChatWindow::showUntrustedProjectNotice,
+                        ClaudeChatWindow::showOutsideWorkingDirectoryNotice));
         this.codexSDKBridge = new CodexSDKBridge();
         this.grokSDKBridge = new GrokSDKBridge();
         this.zcodeSDKBridge = new ZcodeSDKBridge();
@@ -243,12 +307,41 @@ public class ClaudeChatWindow {
         this.openCodeCliBridge = new OpenCodeCliBridge();
         this.piCliBridge = new PiCliBridge();
         this.ompCliBridge = new OmpCliBridge();
+        this.geminiCliBridge = new GeminiCliBridge();
         this.miniMaxCliBridge = new MiniMaxCliBridge();
         // Grok uses GrokSDKBridge (persistent ACP / grok agent stdio), not MarkerCliBridge.
-        this.cliBridges = SessionProviderRouter.registerCliBridges(
+        // DshCliBridge is fieldless and constructed inside registerBundledCliBridges.
+        this.cliBridges = registerBundledCliBridges(
                 this.kimiCliBridge, this.openCodeCliBridge, this.piCliBridge,
-                this.ompCliBridge, new DshCliBridge(), this.miniMaxCliBridge);
+                this.ompCliBridge, this.geminiCliBridge, this.miniMaxCliBridge);
         this.settingsService = new CodemossSettingsService();
+        this.restoredHistoryLoader = new RestoredHistoryLoader(settingsService, new RestoredHistoryLoader.Host() {
+            @Override
+            public ClaudeSession currentSession() {
+                return session;
+            }
+
+            @Override
+            public boolean isFrontendReady() {
+                return frontendReady;
+            }
+
+            @Override
+            public boolean isDisposed() {
+                return disposed;
+            }
+
+            @Override
+            public boolean callJavaScript(String functionName, String... args) {
+                return ClaudeChatWindow.this.callJavaScript(functionName, args);
+            }
+
+            @Override
+            public void exposeReplacementSession() {
+                sessionId = resolveExposedSessionId(null, permissionServiceKey);
+                persistTabSessionState();
+            }
+        });
         this.htmlLoader = new HtmlLoader(getClass());
         this.mainPanel = new JPanel(new BorderLayout());
         this.surfaceFrameFence = new SurfaceFrameFence(new SurfaceFrameFence.Listener() {
@@ -308,11 +401,16 @@ public class ClaudeChatWindow {
                 () -> webviewInitializer.recreateWebview("watchdog_recreate"),
                 () -> disposed,
                 () -> streamCoalescer.isStreamActive(),
-                () -> frontendReady
+                () -> frontendReady,
+                () -> webviewInitializer != null && webviewInitializer.canRecoverWebview()
         );
+        this.webviewWatchdog.setStartupFailureHandler(() -> this.webviewInitializer.showStartupFailureNotice());
 
         this.session = new ClaudeSession(
                 project, claudeSDKBridge, codexSDKBridge, cliBridges, grokSDKBridge, zcodeSDKBridge);
+        // Bind to the installed session, never to temporary lifecycle/default sessions.
+        this.claudeSDKBridge.setSessionSupplierResolver(() -> this.session.getState().getRuntimeSupplierId("claude"));
+        this.codexSDKBridge.setSessionSupplierResolver(() -> this.session.getState().getRuntimeSupplierId("codex"));
 
         this.chatWindowDelegate = new ChatWindowDelegate(createDelegateHost());
         chatWindowDelegate.loadPermissionModeFromSettings();
@@ -321,6 +419,17 @@ public class ClaudeChatWindow {
         chatWindowDelegate.initializeHandlers();
         this.permissionServiceKey = chatWindowDelegate.setupPermissionService();
         this.sessionId = this.permissionServiceKey;
+        java.lang.ref.WeakReference<ClaudeChatWindow> executionOwner = new java.lang.ref.WeakReference<>(this);
+        PermissionService.getInstance(project, permissionServiceKey).setExecutionOwnerSupplier(() -> {
+            ClaudeChatWindow current = executionOwner.get();
+            if (current == null || current.disposed || current.project.isDisposed()) {
+                return null;
+            }
+            ClaudeSession owner = current.session;
+            return owner == null ? null : owner.getState().currentExecutionOwnership();
+        });
+        this.draftCacheKey = DraftCacheKeys.getInstance().register(
+                project.getLocationHash(), permissionServiceKey, this::requestClosedDraftPrune);
 
         this.sessionLifecycleManager = new SessionLifecycleManager(new SessionLifecycleManager.SessionHost() {
             @Override
@@ -360,7 +469,22 @@ public class ClaudeChatWindow {
 
             @Override
             public void setSession(ClaudeSession s) {
+                if (session != s) {
+                    // Persist the conversation identity, not only the tab.
+                    // Two fresh conversations can both have a null provider
+                    // session ID; a later IDE restart must not merge them.
+                    String retiredReviewTargetId = reviewTargetId;
+                    reviewTargetId = java.util.UUID.randomUUID().toString();
+                    // Handoff drafts registered for the retired identity can no longer
+                    // be acknowledged by anyone; keep the bounded history orphan-free.
+                    if (retiredReviewTargetId != null && !project.isDisposed()) {
+                        com.github.claudecodegui.markdown.MarkdownReviewService.getInstance(project)
+                                .dropPending(retiredReviewTargetId);
+                    }
+                }
                 session = s;
+                allowReviewRecovery = false;
+                syncArtifactReviewTarget();
                 persistTabSessionState();
             }
 
@@ -416,6 +540,22 @@ public class ClaudeChatWindow {
                 if (sessionCallbackAdapter != null) {
                     sessionCallbackAdapter.deactivate();
                 }
+                // Every session swap starts here; the frontend drops the banner on the following clearMessages.
+                restoredHistoryLoader.retire();
+            }
+
+            @Override
+            public void invalidatePendingHistoryLoads() {
+                if (historyHandler != null) {
+                    historyHandler.invalidatePendingLoads();
+                }
+            }
+
+            @Override
+            public void clearReplacedHistory() {
+                if (historyHandler != null) {
+                    historyHandler.clearCodexHistory();
+                }
             }
 
             @Override
@@ -432,12 +572,14 @@ public class ClaudeChatWindow {
         this.editorContextTracker = new EditorContextTracker(project, new EditorContextTracker.ContextCallback() {
             @Override
             public void addSelectionInfo(String info) {
-                callJavaScript("addSelectionInfo", info);
+                pendingSelectionContext.update(info);
+                flushPendingSelectionContext();
             }
 
             @Override
             public void clearSelectionInfo() {
-                callJavaScript("clearSelectionInfo");
+                pendingSelectionContext.update(null);
+                flushPendingSelectionContext();
             }
         });
         editorContextTracker.registerListeners();
@@ -506,6 +648,7 @@ public class ClaudeChatWindow {
             }
 
             persistTabSessionState();
+            chatWindowDelegate.refreshTabIndicator();
         }
     }
 
@@ -522,6 +665,23 @@ public class ClaudeChatWindow {
 
     public boolean isInitialized() {
         return initialWebviewStartup.hasStarted();
+    }
+
+    /** Let the visible tab finish restoring history before background work competes with it. */
+    boolean isReadyForBackgroundPreload() {
+        return frontendReady && (session == null || !session.isLoading());
+    }
+
+    /**
+     * Warm a restored page without selecting the tab or starting an AI turn. Its history loads when
+     * the page reports ready, which honours the startup-history setting and shows the load state.
+     */
+    void preloadRestoredTab() {
+        if (disposed || project.isDisposed()) {
+            return;
+        }
+        ensureWebviewInitialized();
+        loadRestoredHistoryIfNeeded();
     }
 
     private void ensureWebviewInitialized() {
@@ -542,7 +702,7 @@ public class ClaudeChatWindow {
                 });
     }
 
-    /** Coalesce activation, hierarchy and remote-work requests before the first EDT startup. */
+    /** Coalesce activation, hierarchy and forced startup requests before the first EDT startup. */
     static final class InitialWebviewStartup {
         private boolean requested;
         private boolean forced;
@@ -662,12 +822,13 @@ public class ClaudeChatWindow {
                 return;
             }
             ensureWebviewInitialized(false);
+            chatWindowDelegate.markTabReadIfVisible();
             webviewWatchdog.markTabActivated();
             webviewInitializer.onTabActivated();
             JBCefBrowser currentBrowser = browser;
             TabActivationSurfaceAction action = decideTabActivationSurfaceAction(
                     currentBrowser != null,
-                    currentBrowser != null && currentBrowser.isOffScreenRendering(),
+                    usesLocalOsrSurface(currentBrowser),
                     hasCurrentUnpublishedPublication());
             switch (action) {
                 case PUBLISH_PENDING:
@@ -681,7 +842,9 @@ public class ClaudeChatWindow {
                     // Windowed JCEF keeps the established activation repaint path. It does not
                     // participate in the OSR publication fence or its sentinel pulse.
                     requestCurrentWindowedSurfaceRefresh("tab_activated");
-                    callJavaScript("window.onTabActivated");
+                    if (!JBCefBrowserFactory.isRemoteDevelopmentBrowser(currentBrowser.getCefBrowser())) {
+                        callJavaScript("window.onTabActivated");
+                    }
                     break;
                 default:
                     break;
@@ -711,17 +874,26 @@ public class ClaudeChatWindow {
                 : TabActivationSurfaceAction.PRESENT_CACHED;
     }
 
+    /** The remote frontend owns its raster backing image and cannot acknowledge backend fences. */
+    private static boolean usesLocalOsrSurface(JBCefBrowser browser) {
+        return browser != null && browser.isOffScreenRendering()
+                && !JBCefBrowserFactory.isRemoteDevelopmentBrowser(browser.getCefBrowser());
+    }
+
     private boolean refreshCurrentWebviewSurface(JBCefBrowser expectedBrowser) {
         if (expectedBrowser == null || browser != expectedBrowser) {
             return false;
         }
 
         try {
+            if (JBCefBrowserFactory.isRemoteDevelopmentBrowser(expectedBrowser.getCefBrowser())) {
+                return callJavaScript("window.onTabActivated", "true");
+            }
             return refreshActivatedWebview(
                     mainPanel,
                     expectedBrowser.getComponent(),
                     expectedBrowser.getCefBrowser(),
-                    expectedBrowser.isOffScreenRendering(),
+                    usesLocalOsrSurface(expectedBrowser),
                     () -> { }
             );
         } catch (Exception | LinkageError e) {
@@ -743,7 +915,7 @@ public class ClaudeChatWindow {
         if (expectedBrowser == null) {
             return;
         }
-        if (expectedBrowser.isOffScreenRendering()) {
+        if (usesLocalOsrSurface(expectedBrowser)) {
             surfaceFrameFence.request(
                     expectedBrowser,
                     expectedBrowser.getCefBrowser(),
@@ -759,7 +931,7 @@ public class ClaudeChatWindow {
     private void requestCurrentWindowedSurfaceRefresh(String reason) {
         JBCefBrowser currentBrowser = browser;
         if (disposed || !frontendReady || currentBrowser == null
-                || currentBrowser.isOffScreenRendering()) {
+                || usesLocalOsrSurface(currentBrowser)) {
             return;
         }
         requestSurfaceRefresh(
@@ -789,7 +961,7 @@ public class ClaudeChatWindow {
         rebindSurfaceRefreshWindow();
         JBCefBrowser currentBrowser = browser;
         long currentReadyEpoch = frontendReadyTransitions.currentEpoch();
-        if (currentBrowser != null && currentBrowser.isOffScreenRendering()) {
+        if (usesLocalOsrSurface(currentBrowser)) {
             return tryArmOsrSurfaceRefresh(
                     currentBrowser, currentReadyEpoch, trigger, replacementSource);
         }
@@ -821,7 +993,7 @@ public class ClaudeChatWindow {
             return false;
         }
         long readyEpoch = frontendReadyTransitions.currentEpoch();
-        if (currentBrowser.isOffScreenRendering()) {
+        if (usesLocalOsrSurface(currentBrowser)) {
             try {
                 return surfaceFrameFence.hasUnpublishedFor(
                         currentBrowser,
@@ -837,7 +1009,7 @@ public class ClaudeChatWindow {
 
     private void requestCachedSurfacePresentation(JBCefBrowser expectedBrowser) {
         if (disposed || !frontendReady || expectedBrowser == null
-                || browser != expectedBrowser || !expectedBrowser.isOffScreenRendering()) {
+                || browser != expectedBrowser || !usesLocalOsrSurface(expectedBrowser)) {
             return;
         }
         try {
@@ -862,7 +1034,7 @@ public class ClaudeChatWindow {
             return false;
         }
         JBCefBrowser currentBrowser = browser;
-        if (currentBrowser == null || !currentBrowser.isOffScreenRendering()) {
+        if (currentBrowser == null || !usesLocalOsrSurface(currentBrowser)) {
             return false;
         }
         CefBrowser currentCefBrowser;
@@ -1292,6 +1464,7 @@ public class ClaudeChatWindow {
         }
         rebindSurfaceRefreshWindow();
         if (mainPanel.isShowing()) {
+            chatWindowDelegate.markTabReadIfVisible();
             ensureWebviewInitialized(false);
             resumePendingSurfaceWork("hierarchy_showing");
         }
@@ -1315,6 +1488,8 @@ public class ClaudeChatWindow {
         if (browser == nextBrowser) {
             return;
         }
+        // Fence surface callbacks before listener/query cleanup can pump native events.
+        browser = nextBrowser;
         if (observedBrowserComponent != null) {
             observedBrowserComponent.removeComponentListener(surfaceRefreshComponentListener);
         }
@@ -1322,7 +1497,6 @@ public class ClaudeChatWindow {
         rebindNativeSurfaceComponent(null);
         cancelScheduledOsrSurfaceRefresh();
         surfaceRefreshCoordinator.invalidate();
-        browser = nextBrowser;
         webviewEventQueue.browserChanged();
         streamCoalescer.resetDeliveryBaseline();
         if (nextBrowser != null) {
@@ -1516,6 +1690,10 @@ public class ClaudeChatWindow {
         return ompCliBridge;
     }
 
+    public GeminiCliBridge getGeminiCliBridge() {
+        return geminiCliBridge;
+    }
+
     public MiniMaxCliBridge getMiniMaxCliBridge() {
         return miniMaxCliBridge;
     }
@@ -1572,6 +1750,8 @@ public class ClaudeChatWindow {
         target.setModel(source.getModel());
         target.setPermissionMode(source.getPermissionMode());
         target.setReasoningEffort(source.getReasoningEffort());
+        target.setClaudeUltracode(source.isClaudeUltracode());
+        target.setOmpApprovalMode(source.getOmpApprovalMode());
     }
 
     public SessionLifecycleManager getSessionLifecycleManager() {
@@ -1582,9 +1762,11 @@ public class ClaudeChatWindow {
         if (savedState == null || session == null) {
             return;
         }
-
-        if (savedState.permissionMode != null && !savedState.permissionMode.trim().isEmpty()) {
-            session.setPermissionMode(savedState.permissionMode);
+        if (savedState.claudeSupplierId != null) {
+            session.getState().setSupplierId("claude", savedState.claudeSupplierId);
+        }
+        if (savedState.codexSupplierId != null) {
+            session.getState().setSupplierId("codex", savedState.codexSupplierId);
         }
         if (savedState.provider != null && !savedState.provider.trim().isEmpty()) {
             session.setProvider(savedState.provider);
@@ -1600,6 +1782,10 @@ public class ClaudeChatWindow {
                 handlerContext.setCurrentProvider(savedState.provider);
             }
         }
+        // After the provider: SessionState drops "sandbox" while the provider is not gemini.
+        if (savedState.permissionMode != null && !savedState.permissionMode.trim().isEmpty()) {
+            session.setPermissionMode(savedState.permissionMode);
+        }
         if (savedState.model != null && !savedState.model.trim().isEmpty()) {
             session.setModel(savedState.model);
             // ModelProviderHandler also reads the handler-owned model to detect
@@ -1613,11 +1799,17 @@ public class ClaudeChatWindow {
         if (savedState.reasoningEffort != null && !savedState.reasoningEffort.trim().isEmpty()) {
             session.setReasoningEffort(savedState.reasoningEffort);
         }
+        session.setClaudeUltracode(savedState.claudeUltracode);
+        session.getState().setOmpApprovalMode(savedState.ompApprovalMode);
 
         boolean sameProject = TabSessionRestorePolicy.matchesProjectIdentity(
                 savedState,
                 project != null ? project.getBasePath() : null,
                 session.getCwd());
+        if (sameProject && isNonEmpty(savedState.reviewTargetId)) {
+            reviewTargetId = savedState.reviewTargetId;
+            allowReviewRecovery = true;
+        }
         String restoredSessionId = sameProject && isNonEmpty(savedState.sessionId)
                 ? savedState.sessionId : null;
         String restoredCwd = sameProject && isNonEmpty(savedState.cwd)
@@ -1627,7 +1819,10 @@ public class ClaudeChatWindow {
                     + savedState.projectPath + ", currentProject="
                     + (project != null ? project.getBasePath() : null));
         }
-        session.setSessionInfo(restoredSessionId, restoredCwd);
+        String restoredSupplier = "codex".equals(session.getProvider()) ? savedState.codexSupplierId : savedState.claudeSupplierId;
+        session.setSessionInfo(restoredSessionId, restoredCwd, null, restoredSupplier);
+        restoredHistoryLoader.bind(session, restoredSessionId);
+        chatWindowDelegate.restoreUnread(sameProject && savedState.unread);
         persistTabSessionState();
 
         LOG.info("[TabRestore] Restored tab session state: provider=" + savedState.provider
@@ -1637,51 +1832,22 @@ public class ClaudeChatWindow {
     public void restorePersistedTabSessionState(TabStateService.TabSessionState savedState, boolean loadImmediately) {
         restorePersistedTabSessionState(savedState);
         if (session != null && isNonEmpty(session.getSessionId())
-                && TabSessionRestorePolicy.shouldLoadImmediately(savedState, loadImmediately)) {
-            loadRestoredHistoryIfNeeded(savedState);
+                && TabSessionRestorePolicy.shouldLoadImmediately(
+                        savedState, loadImmediately, settingsService.isLoadHistoryOnStartup())) {
+            restoredHistoryLoader.loadIfNeeded(savedState);
         }
     }
 
     public void loadRestoredHistoryIfNeeded() {
-        if (session == null || !frontendReady) {
-            return;
-        }
-
-        TabStateService.TabSessionState currentState = new TabStateService.TabSessionState();
-        currentState.sessionId = session.getSessionId();
-        loadRestoredHistoryIfNeeded(currentState);
+        restoredHistoryLoader.loadIfNeeded();
     }
 
-    private void loadRestoredHistoryIfNeeded(TabStateService.TabSessionState savedState) {
-        if (!TabSessionRestorePolicy.shouldStartHistoryLoad(savedState, frontendReady)
-                || session == null || !isNonEmpty(session.getSessionId())) {
-            return;
-        }
-        if (!restoredHistoryLoadStarted.compareAndSet(false, true)) {
-            return;
-        }
+    public void loadRestoredHistoryManually() {
+        restoredHistoryLoader.loadManually();
+    }
 
-        ClaudeSession restoringSession = session;
-        restoringSession.loadFromServer().thenRun(() -> ApplicationManager.getApplication().invokeLater(() -> {
-            if (!disposed && session == restoringSession) {
-                if (!isNonEmpty(restoringSession.getSessionId())) {
-                    sessionId = resolveExposedSessionId(null, permissionServiceKey);
-                    persistTabSessionState();
-                }
-                callJavaScript("historyLoadComplete",
-                        String.valueOf(restoringSession.getMessages().size()));
-            }
-        })).exceptionally(ex -> {
-            LOG.warn("[TabRestore] Failed to load persisted tab history: " + ex.getMessage(), ex);
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (!disposed) {
-                    callJavaScript("historyLoadComplete");
-                    callJavaScript("addErrorMessage",
-                            JsUtils.escapeJs("Failed to restore session history: " + ex.getMessage()));
-                }
-            });
-            return null;
-        });
+    public void cancelRestoredHistoryLoad(String requestId) {
+        restoredHistoryLoader.cancel(requestId);
     }
 
     public void addCodeSnippetFromExternal(String selectionInfo) {
@@ -1732,6 +1898,12 @@ public class ClaudeChatWindow {
         LOG.debug("[WebviewTransport] Requested full transcript replay: reason=" + reason);
     }
 
+    /** Lets this page delete persisted drafts of closed windows; false if it cannot run now. */
+    private boolean requestClosedDraftPrune(String openWindowsJson) {
+        return !disposed && frontendReady
+                && callJavaScript("window.pruneClosedDrafts", JsUtils.escapeJs(openWindowsJson));
+    }
+
     private void updateFrontendReadyState(boolean ready) {
         FrontendReadyTransition transition = frontendReadyTransitions.update(ready);
         frontendReady = ready;
@@ -1742,8 +1914,11 @@ public class ClaudeChatWindow {
         }
         hasEverBeenFrontendReady = true;
         webviewEventQueue.readyChanged();
+        requestClosedDraftPrune(DraftCacheKeys.getInstance().openWindowsJson());
+        flushPendingSelectionContext();
         flushPendingCodeSnippet();
         flushPendingFileReferences();
+        restoreArtifactReviews();
         // No transcript replay here: the only caller that passes true is
         // handleFrontendReady, which replays immediately afterwards through
         // replayCurrentSessionStateToFrontend — a superset that also restores the
@@ -2270,6 +2445,36 @@ public class ClaudeChatWindow {
         webviewEventQueue.enqueueRaw(jsCode);
     }
 
+    private void flushPendingSelectionContext() {
+        if (disposed || !frontendReady) {
+            return;
+        }
+        pendingSelectionContext.replay(info -> {
+            if (info == null) {
+                callJavaScript("clearSelectionInfo");
+            } else {
+                callJavaScript("addSelectionInfo", info);
+            }
+        });
+    }
+
+    /** Editor context is latest state, so inactive tabs retain one value without creating JCEF. */
+    static final class PendingSelectionContext {
+        private boolean known;
+        private String selection;
+
+        synchronized void update(String info) {
+            known = true;
+            selection = info;
+        }
+
+        synchronized void replay(Consumer<String> sender) {
+            if (known) {
+                sender.accept(selection);
+            }
+        }
+    }
+
     /** Keep an IDE action's captured clipboard image while its draft claims ownership. */
     public void offerClipboardImage(Image image) {
         this.chatWindowDelegate.offerClipboardImage(image);
@@ -2371,11 +2576,37 @@ public class ClaudeChatWindow {
         String type = parts[0];
         String content = parts.length > 1 ? parts[1] : "";
 
+        if ("artifact_review_ready".equals(type)) {
+            restoreArtifactReviews();
+            return;
+        }
+        if ("artifact_review_ack".equals(type)) {
+            try {
+                JsonObject ack = GSON.fromJson(content, JsonObject.class);
+                String status = ack.get("status").getAsString();
+                if (!java.util.Set.of("received", "queued", "removed").contains(status)) {
+                    return;
+                }
+                // Receipts describe the batch's own frozen target identity, which may
+                // already differ from this window's current one after a session switch.
+                com.github.claudecodegui.markdown.MarkdownReviewService.getInstance(project)
+                        .acknowledge(ack.get("targetId").getAsString(), ack.get("targetEpoch").getAsString(),
+                                ack.get("id").getAsString(), status,
+                                GSON.fromJson(ack.get("annotationIds"), new com.google.gson.reflect.TypeToken<List<String>>() {}.getType()));
+            } catch (RuntimeException error) {
+                LOG.warn("Invalid Markdown review acknowledgement", error);
+            }
+            return;
+        }
+
         MessageDispatcher dispatcher = this.messageDispatcher;
         if (dispatcher == null) {
             return;
         }
         if (dispatcher.dispatch(type, content)) {
+            if ("set_claude_ultracode".equals(type) || "set_reasoning_effort".equals(type)) {
+                persistTabSessionStateLater();
+            }
             return;
         }
 
@@ -2400,6 +2631,20 @@ public class ClaudeChatWindow {
                 streamCoalescer,
                 new SessionCallbackAdapter.JsTarget() {
                     @Override
+                    public void onAssistantActivity() {
+                        if (!disposed && session == callbackSession) {
+                            chatWindowDelegate.onAssistantActivity();
+                        }
+                    }
+
+                    @Override
+                    public void onTurnFailed() {
+                        if (!disposed && session == callbackSession) {
+                            chatWindowDelegate.onTurnFailed();
+                        }
+                    }
+
+                    @Override
                     public void callJavaScript(String functionName, String... args) {
                         ClaudeChatWindow.this.callJavaScript(functionName, args);
                     }
@@ -2411,10 +2656,17 @@ public class ClaudeChatWindow {
             /** Keeps window identity and persisted tabs aligned with the bound session. */
             @Override
             public void onSessionIdReceived(String newSessionId) {
+                onSessionIdReceived(newSessionId, null);
+            }
+
+            @Override
+            public void onSessionIdReceived(String newSessionId, String transitionToken) {
                 if (newSessionId == null || ClaudeChatWindow.this.session != callbackSession) {
                     return;
                 }
-                super.onSessionIdReceived(newSessionId);
+                super.onSessionIdReceived(newSessionId, transitionToken);
+                com.github.claudecodegui.markdown.MarkdownReviewService.getInstance(project)
+                        .bindSession(reviewTargetId, callbackSession.getRuntimeSessionEpoch(), newSessionId);
                 String exposedSessionId = resolveExposedSessionId(newSessionId, ClaudeChatWindow.this.permissionServiceKey);
                 if (exposedSessionId.equals(ClaudeChatWindow.this.sessionId)) {
                     return;
@@ -2551,8 +2803,53 @@ public class ClaudeChatWindow {
                     if (currentSessionId == null || !currentSessionId.equals(taskSessionId)) {
                         return;
                     }
+                    String taskEpoch = data.has("runtimeSessionEpoch") && data.get("runtimeSessionEpoch").isJsonPrimitive()
+                            ? data.get("runtimeSessionEpoch").getAsString() : null;
+                    if (taskEpoch != null && !taskEpoch.equals(session.getRuntimeSessionEpoch())) {
+                        return;
+                    }
                     if (adapter != null && data.has("taskEvent") && !data.get("taskEvent").isJsonNull()) {
                         adapter.onTaskEvent(data.get("taskEvent").toString());
+                    }
+                } else if ("inter_turn_message".equals(event)) {
+                    // Assistant body from a background follow-up turn, forwarded
+                    // by the ai-bridge perpetual reader's inter-turn branch (no
+                    // active turn means the [MESSAGE] stream cannot carry it and
+                    // the session_updated reload is best-effort). Mirror
+                    // task_event's session guard so a stale follow-up cannot leak
+                    // into a session the user has navigated to; a dropped event
+                    // is still recovered by the loadHistorySession reload when
+                    // the user switches back.
+                    String interTurnSessionId = data.has("sessionId") && data.get("sessionId").isJsonPrimitive()
+                            ? data.get("sessionId").getAsString() : null;
+                    if (interTurnSessionId == null) {
+                        LOG.warn("[ClaudeChatWindow] inter_turn_message event missing sessionId");
+                        return;
+                    }
+                    var interTurnAdapter = sessionCallbackAdapter;
+                    ClaudeSession interTurnSession = session;
+                    String interTurnCurrentSessionId = interTurnSession != null ? interTurnSession.getSessionId() : null;
+                    if (interTurnCurrentSessionId == null || !interTurnCurrentSessionId.equals(interTurnSessionId)) {
+                        return;
+                    }
+                    if (interTurnAdapter == null || !data.has("message") || !data.get("message").isJsonObject()) {
+                        return;
+                    }
+                    JsonObject interTurnRaw = data.getAsJsonObject("message");
+                    // Keep SessionState in sync with the frontend's live append:
+                    // otherwise the next updateMessages snapshot is one row
+                    // shorter and preserveLatestMessagesOnShrink misaligns its
+                    // positional tail. MessageParser applies the same filters a
+                    // history read would (placeholder, sidechain, command tags).
+                    if (interTurnSession.appendInterTurnMessage(interTurnRaw)) {
+                        interTurnAdapter.onInterTurnMessage(
+                                buildInterTurnMessagePayload(interTurnSessionId, interTurnRaw));
+                    } else {
+                        // The follow-up's own session_updated reload runs before this send's
+                        // stream starts and can read the transcript before the question is
+                        // written, so reload again once the turn is idle.
+                        deferredReload.defer(interTurnSessionId);
+                        scheduleDeferredReloadSafetyDrain();
                     }
                 }
             };
@@ -2615,8 +2912,10 @@ public class ClaudeChatWindow {
      *       path already drained it): stop polling.</li>
      *   <li>{@code RECHECK_LATER} — still parked but a stream or its final
      *       snapshot is active: reloading now would race the stream or clear the
-     *       live state before the snapshot is queued, so wait and re-check.</li>
-     *   <li>{@code DRAIN} — parked and the stream is idle: the safe point to
+     *       live state before the snapshot is queued, so wait and re-check. A
+     *       busy session counts too: a send waiting for the CLI to go quiet has
+     *       no stream yet, and a non-streaming turn never starts one.</li>
+     *   <li>{@code DRAIN} — parked and the turn is idle: the safe point to
      *       drain, even though no onStreamEnded edge arrived for this defer.</li>
      * </ul>
      */
@@ -2626,17 +2925,37 @@ public class ClaudeChatWindow {
             boolean disposed,
             boolean hasPending,
             boolean streamActive,
-            boolean snapshotBuildPending
+            boolean snapshotBuildPending,
+            boolean busy
     ) {
         if (disposed || !hasPending) {
             return SafetyDrainAction.DONE;
         }
-        return streamActive || snapshotBuildPending
+        return streamActive || snapshotBuildPending || busy
                 ? SafetyDrainAction.RECHECK_LATER : SafetyDrainAction.DRAIN;
     }
 
     static boolean shouldReconcileTranscriptAtStreamEnd(String provider, String sessionId) {
         return ("grok".equals(provider) || "zcode".equals(provider)) && sessionId != null && !sessionId.isBlank();
+    }
+
+    /**
+     * Build the envelope forwarded to {@code window.onInterTurnMessage}.
+     *
+     * <p>The daemon emits {@code {type:"daemon", event:"inter_turn_message",
+     * sessionId, message}}. Forwarding only {@code message} made the frontend's
+     * session guard see no {@code sessionId} and drop every real event, so the
+     * envelope shape is pinned here and in messageCallbacks.ts.</p>
+     *
+     * @param sessionId the session the event belongs to
+     * @param message   the SDK message object
+     * @return the JSON string handed to the webview callback
+     */
+    static String buildInterTurnMessagePayload(String sessionId, JsonObject message) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("sessionId", sessionId);
+        payload.add("message", message);
+        return GSON.toJson(payload);
     }
 
     /** (Re)arm the safety backstop; overlapping arms collapse to one pending tick. */
@@ -2657,11 +2976,13 @@ public class ClaudeChatWindow {
     private void deferredReloadSafetyTick() {
         boolean streamActive = streamCoalescer != null && streamCoalescer.isStreamActive();
         boolean snapshotBuildPending = streamCoalescer != null && streamCoalescer.isSnapshotBuildPending();
+        ClaudeSession current = session;
         switch (decideDeferredReloadSafety(
                 disposed,
                 deferredReload.hasPending(),
                 streamActive,
-                snapshotBuildPending)) {
+                snapshotBuildPending,
+                current != null && current.isBusy())) {
             case DRAIN:
                 LOG.info("[ClaudeChatWindow] safety-draining deferred reload (no stream-end edge followed the defer)");
                 drainDeferredReload();
@@ -2745,9 +3066,17 @@ public class ClaudeChatWindow {
         // isSessionActive() check in the continuation additionally blocks any
         // follow-up reload. Two independent guards; neither alone is sufficient.
         ClaudeSession current = session;
+        long committedBefore = current.getCommittedHistoryLoadCount();
         current.loadFromServer().whenComplete((v, ex) -> {
             if (ex != null) {
                 LOG.warn("[ClaudeChatWindow] session reload failed", ex);
+            } else {
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (!disposed) {
+                        restoredHistoryLoader.settleIfCommitted(current, committedBefore);
+                        retireCodexPagesAfterFullReload(current, targetSessionId, committedBefore);
+                    }
+                });
             }
             boolean runAgain;
             synchronized (sessionReloadLock) {
@@ -2801,6 +3130,23 @@ public class ClaudeChatWindow {
         return pending && !disposed && sessionMatches;
     }
 
+    /** Busy clears at stream end, before a native turn settles; both mean work is still in flight. */
+    static boolean hasTurnInFlight(ClaudeSession session) {
+        return session != null && (session.isBusy() || session.getState().getExecutionState().hasLiveTurn());
+    }
+
+    /**
+     * A committed Codex reload holds the whole thread, so the page's earlier-page cursor is spent.
+     * Codex switches threads on the same session object, hence the thread id check.
+     */
+    private void retireCodexPagesAfterFullReload(ClaudeSession reloaded, String threadId, long committedBefore) {
+        if (historyHandler != null && reloaded == session && "codex".equals(reloaded.getProvider())
+                && reloaded.getCommittedHistoryLoadCount() != committedBefore
+                && threadId != null && threadId.equals(reloaded.getSessionId())) {
+            historyHandler.retireCodexPageCursor(threadId);
+        }
+    }
+
     /**
      * Returns true iff the window currently holds the session identified by
      * {@code sessionId} (i.e. it has not been replaced by a new-session /
@@ -2840,10 +3186,12 @@ public class ClaudeChatWindow {
             return;
         }
         if ("claude".equals(session.getProvider()) && session.getError() == null) {
+            HandlerContext ctx = this.handlerContext;
             com.github.claudecodegui.notifications.ClaudeNotifier.showSuccess(
                 project,
                 com.github.claudecodegui.notifications.ClaudeNotifier.buildTitleFromSession(session),
-                com.github.claudecodegui.notifications.ClaudeNotifier.buildPreviewFromSession(session, "Task completed"));
+                com.github.claudecodegui.notifications.ClaudeNotifier.buildPreviewFromSession(session, "Task completed"),
+                ctx == null ? null : ctx.notificationSource());
         }
     }
 
@@ -2879,10 +3227,31 @@ public class ClaudeChatWindow {
         return contentManager.getIndexOfContent(content);
     }
 
+    /** Saves the supplier binding now, so a quick session switch cannot drop it; the tab snapshot follows on the EDT. */
+    private void persistTabSessionStateLater() {
+        ClaudeSession configuredSession = this.session;
+        if (project != null && !project.isDisposed()) {
+            saveSupplierBinding(configuredSession);
+        }
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (!this.disposed && this.session == configuredSession) {
+                this.persistTabSessionState();
+            }
+        });
+    }
+
+    private static void saveSupplierBinding(ClaudeSession target) {
+        var supplierBindings = com.github.claudecodegui.settings.SessionSupplierStateService.getInstance();
+        if (supplierBindings != null && target != null) {
+            supplierBindings.saveSupplier(target.getProvider(), target.getSessionId(), target.getState().getSupplierId(target.getProvider()));
+        }
+    }
+
     private void persistTabSessionState() {
         if (project == null || project.isDisposed() || session == null) {
             return;
         }
+        saveSupplierBinding(session);
 
         int tabIndex = getTabIndex();
         if (tabIndex < 0) {
@@ -2898,6 +3267,12 @@ public class ClaudeChatWindow {
         snapshot.model = session.getModel();
         snapshot.permissionMode = session.getPermissionMode();
         snapshot.reasoningEffort = session.getReasoningEffort();
+        snapshot.claudeSupplierId = session.getState().getSupplierId("claude");
+        snapshot.codexSupplierId = session.getState().getSupplierId("codex");
+        snapshot.ompApprovalMode = session.getState().getOmpApprovalMode();
+        snapshot.unread = chatWindowDelegate.hasUnread();
+        snapshot.claudeUltracode = session.isClaudeUltracode();
+        snapshot.reviewTargetId = reviewTargetId;
 
         TabStateService.getInstance(project).saveTabSessionState(tabIndex, snapshot);
     }
@@ -2935,6 +3310,46 @@ public class ClaudeChatWindow {
     }
 
     // ==================== Code Snippets ====================
+
+    public String getReviewTargetId() {
+        return reviewTargetId;
+    }
+
+    public void addArtifactReview(com.github.claudecodegui.markdown.ReviewBatch batch) {
+        if (disposed || session == null || !reviewTargetId.equals(batch.targetId)
+                || !session.getRuntimeSessionEpoch().equals(batch.targetEpoch)) {
+            throw new IllegalStateException("Target chat changed. Add the review again to the intended chat.");
+        }
+        if (frontendReady) {
+            callJavaScript("showArtifactReviewChat");
+            syncArtifactReviewTarget();
+            callJavaScript("addArtifactReview", JsUtils.escapeJs(GSON.toJson(batch)));
+        }
+        persistTabSessionState();
+    }
+
+    private void restoreArtifactReviews() {
+        if (disposed || session == null || !frontendReady) {
+            return;
+        }
+        syncArtifactReviewTarget();
+        for (com.github.claudecodegui.markdown.ReviewBatch batch
+                : com.github.claudecodegui.markdown.MarkdownReviewService.getInstance(project)
+                .pending(reviewTargetId, session.getRuntimeSessionEpoch(), session.getSessionId(), allowReviewRecovery)) {
+            // Recovery must not navigate away from Settings during page init.
+            callJavaScript("addArtifactReview", JsUtils.escapeJs(GSON.toJson(batch)));
+        }
+        allowReviewRecovery = false;
+    }
+
+    private void syncArtifactReviewTarget() {
+        if (!disposed && session != null && frontendReady) {
+            JsonObject target = new JsonObject();
+            target.addProperty("targetId", reviewTargetId);
+            target.addProperty("targetEpoch", session.getRuntimeSessionEpoch());
+            callJavaScript("setArtifactReviewTarget", JsUtils.escapeJs(GSON.toJson(target)));
+        }
+    }
 
     private void addCodeSnippet(String selectionInfo) {
         if (selectionInfo != null && !selectionInfo.isEmpty()) {
@@ -2998,6 +3413,9 @@ public class ClaudeChatWindow {
             return;
         }
         this.disposed = true;
+        // Deliberately no dropPending here: an IDE restart restores the saved
+        // reviewTargetId with its drafts. An explicit tab close is a separate
+        // event and drops them in ClaudeSDKToolWindow (R3).
         JBCefBrowser targetBrowser = this.browser;
         try {
             disposeWindowResources();
@@ -3007,6 +3425,13 @@ public class ClaudeChatWindow {
             if (handlerContext != null) {
                 handlerContext.setDisposed(true);
                 handlerContext.setBrowser(null);
+            }
+            disposePermissionService();
+            try {
+                // Other pages may now delete this window's persisted draft.
+                DraftCacheKeys.getInstance().unregister(this.draftCacheKey);
+            } catch (Exception | LinkageError error) {
+                LOG.warn("Failed to release the draft cache key", error);
             }
             try {
                 webviewWatchdog.stop();
@@ -3021,10 +3446,10 @@ public class ClaudeChatWindow {
                 LOG.warn("Failed to finish webview bridge cleanup", error);
             }
             try {
-                if (targetBrowser != null) {
+                if (webviewInitializer != null) {
+                    webviewInitializer.disposeBrowsers(targetBrowser);
+                } else if (targetBrowser != null) {
                     targetBrowser.dispose();
-                    LOG.info("Window browser disposal completed, windowId=" + System.identityHashCode(this)
-                            + ", browserId=" + System.identityHashCode(targetBrowser));
                 }
             } catch (Exception | LinkageError error) {
                 LOG.warn("Failed to clean up browser", error);
@@ -3033,6 +3458,7 @@ public class ClaudeChatWindow {
     }
 
     private void disposeWindowResources() {
+        restoredHistoryLoader.dispose();
         this.webviewEventQueue.dispose();
         cancelScheduledOsrSurfaceRefresh();
         surfaceRefreshCoordinator.invalidate();
@@ -3085,18 +3511,7 @@ public class ClaudeChatWindow {
             titleEventListener = null;
         }
 
-        try {
-            if (this.permissionServiceKey != null && !this.permissionServiceKey.isEmpty()) {
-                PermissionService permissionService = PermissionService.getInstance(project, this.permissionServiceKey);
-                permissionService.unregisterDialogShower(project);
-                permissionService.unregisterAskUserQuestionDialogShower(project);
-                permissionService.unregisterPlanApprovalDialogShower(project);
-                PermissionService.removeInstance(this.permissionServiceKey);
-                LOG.info("Removed PermissionService instance for key: " + this.permissionServiceKey);
-            }
-        } catch (Exception e) {
-            LOG.warn("Failed to unregister dialog showers or remove session instance: " + e.getMessage());
-        }
+        disposePermissionService();
 
         LOG.info("Starting window resource cleanup, project: " + project.getName());
 
@@ -3160,11 +3575,56 @@ public class ClaudeChatWindow {
             LOG.warn("Failed to clean up ZCode processes: " + e.getMessage());
         }
 
+        // Bundled CLI bridges (gemini/omp/dsh/kimi/opencode/pi): the per-provider
+        // blocks above only cover SDK-based bridges — without this loop their
+        // spawned CLI processes would survive window dispose until the JVM
+        // shutdown hook (same shape as ClaudeSDKToolWindow.cleanupWindowProcesses).
+        try {
+            if (getCliBridges() != null) {
+                for (MarkerCliBridge bridge : getCliBridges().values()) {
+                    if (bridge == null) {
+                        continue;
+                    }
+                    int activeCount = bridge.getActiveProcessCount();
+                    if (activeCount > 0) {
+                        LOG.info("Cleaning up " + activeCount + " active CLI process(es)...");
+                    }
+                    bridge.cleanupAllProcesses();
+                }
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to clean up bundled CLI processes: " + e.getMessage());
+        }
         if (messageDispatcher != null) {
             messageDispatcher.clear();
         }
 
         LOG.info("Window service cleanup completed, project: " + project.getName());
+    }
+
+    private void disposePermissionService() {
+        if (this.permissionServiceDisposed) {
+            return;
+        }
+        this.permissionServiceDisposed = true;
+        if (this.permissionServiceKey == null || this.permissionServiceKey.isEmpty()) {
+            return;
+        }
+        try {
+            PermissionService permissionService = PermissionService.getInstance(project, this.permissionServiceKey);
+            permissionService.unregisterDialogShower(project);
+            permissionService.unregisterAskUserQuestionDialogShower(project);
+            permissionService.unregisterPlanApprovalDialogShower(project);
+        } catch (Exception | LinkageError e) {
+            LOG.warn("Failed to unregister dialog showers: " + e.getMessage());
+        } finally {
+            try {
+                PermissionService.removeInstance(this.permissionServiceKey);
+                LOG.info("Removed PermissionService instance for key: " + this.permissionServiceKey);
+            } catch (Exception | LinkageError e) {
+                LOG.warn("Failed to remove session instance: " + e.getMessage());
+            }
+        }
     }
 
     // ==================== Host Interface Factories ====================
@@ -3194,6 +3654,11 @@ public class ClaudeChatWindow {
             @Override
             public JPanel getMainPanel() {
                 return mainPanel;
+            }
+
+            @Override
+            public String getDraftCacheKey() {
+                return draftCacheKey;
             }
 
             @Override
@@ -3283,8 +3748,8 @@ public class ClaudeChatWindow {
      * <p>Used when the user re-opens the session that is already active: instead
      * of tearing it down (interrupt + recreate), we merely refresh the transcript
      * so the latest on-disk state is reflected. Reuses the {@code session_updated}
-     * reload path (coalescing + isSessionActive guard), and defers to stream end
-     * when a turn is live so the streaming bubble is never disturbed.</p>
+     * reload path (coalescing + isSessionActive guard), and waits for idle work
+     * and its final snapshot so pre-stream and non-streaming turns remain intact.</p>
      */
     void reloadActiveSessionMessages() {
         ApplicationManager.getApplication().invokeLater(() -> {
@@ -3301,25 +3766,28 @@ public class ClaudeChatWindow {
                 callJavaScript("historyLoadComplete", "0");
                 return;
             }
-            if (streamCoalescer != null && streamCoalescer.isStreamActive()) {
-                deferredReload.defer(currentId);
-                LOG.info("[ClaudeChatWindow] Same-session resume deferred — "
-                        + "turn streaming, will reload at stream end, sessionId=" + currentId);
-                // Frontend may have begun a transition (cleared the list). Release the
-                // guard now so a later deferred reload can paint; if the list is empty
-                // the stream-end drain will repopulate it.
-                callJavaScript("historyLoadComplete", String.valueOf(current.getMessages().size()));
+            if (hasTurnInFlight(current) || (this.streamCoalescer != null
+                    && (this.streamCoalescer.isStreamActive() || this.streamCoalescer.isSnapshotBuildPending()))) {
+                this.deferredReload.defer(currentId);
+                // Pre-stream and non-streaming work may never produce a stream-end edge.
+                this.scheduleDeferredReloadSafetyDrain();
+                // No historyLoadComplete: the page never cleared, and that signal marks
+                // every tool still running in this turn as interrupted.
+                LOG.info("[ClaudeChatWindow] Same-session resume deferred until the turn is idle, sessionId=" + currentId);
                 return;
             }
             LOG.info("[ClaudeChatWindow] Same-session resume soft reload (no interrupt), sessionId=" + currentId);
             // Do not only requestSessionReload: that path never signals historyLoadComplete,
             // so a frontend that cleared the list under __sessionTransitioning stays blank.
             ClaudeSession restoring = current;
+            long committedBefore = restoring.getCommittedHistoryLoadCount();
             restoring.loadFromServer().thenRun(() -> ApplicationManager.getApplication().invokeLater(() -> {
                 if (disposed || session != restoring) {
                     callJavaScript("historyLoadComplete", "0");
                     return;
                 }
+                restoredHistoryLoader.settleIfCommitted(restoring, committedBefore);
+                retireCodexPagesAfterFullReload(restoring, currentId, committedBefore);
                 int count = restoring.getMessages().size();
                 if (streamCoalescer != null) {
                     // Same lock contract as enqueue: the flush may deep-copy live messages.
@@ -3442,6 +3910,8 @@ public class ClaudeChatWindow {
             @Override
             public void setHandlerContext(HandlerContext ctx) {
                 handlerContext = ctx;
+                // Callers may hold the session state lock on a handler thread; save on the EDT afterwards.
+                ctx.setSessionPreferencesChanged(ClaudeChatWindow.this::persistTabSessionStateLater);
             }
 
             @Override
@@ -3457,6 +3927,11 @@ public class ClaudeChatWindow {
             @Override
             public void setHistoryHandler(HistoryHandler h) {
                 historyHandler = h;
+            }
+
+            @Override
+            public HistoryHandler getHistoryHandler() {
+                return historyHandler;
             }
 
             @Override
@@ -3537,6 +4012,21 @@ public class ClaudeChatWindow {
             @Override
             public void persistTabSessionState() {
                 ClaudeChatWindow.this.persistTabSessionState();
+            }
+
+            @Override
+            public void loadRestoredHistoryManually() {
+                ClaudeChatWindow.this.loadRestoredHistoryManually();
+            }
+
+            @Override
+            public void cancelRestoredHistoryLoad(String requestId) {
+                ClaudeChatWindow.this.cancelRestoredHistoryLoad(requestId);
+            }
+
+            @Override
+            public void retireRestoredHistory() {
+                restoredHistoryLoader.retire();
             }
 
             @Override

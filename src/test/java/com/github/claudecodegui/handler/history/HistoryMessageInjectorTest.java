@@ -1,5 +1,6 @@
 package com.github.claudecodegui.handler.history;
 
+import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.handler.core.HandlerContext;
 import com.github.claudecodegui.provider.codex.CodexHistoryReader;
 import com.github.claudecodegui.session.ClaudeSession;
@@ -7,6 +8,7 @@ import com.github.claudecodegui.session.MessageParser;
 import com.github.claudecodegui.session.SessionCallbackFacade;
 import com.github.claudecodegui.session.SessionMessageOrchestrator;
 import com.github.claudecodegui.session.SessionState;
+import com.github.claudecodegui.util.PlatformUtils;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -27,12 +29,43 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeTrue;
 
 /**
  * Unit tests for provider-aware history loading, pagination, and frontend conversion.
  */
 public class HistoryMessageInjectorTest {
+    @Test
+    public void restoresAsyncQuestionOnceAndPreservesAnswerCorrelationAcrossDifferentModelTurnIds() {
+        JsonArray records = com.google.gson.JsonParser.parseString("""
+                [
+                {"type":"session_meta","payload":{"id":"root"}},
+                {"type":"turn_context","payload":{"turn_id":"native-turn"}},
+                {"type":"response_item","payload":{"type":"function_call","name":"request_user_input_async",
+                "call_id":"question-call","arguments":"{\\"questions\\":[{\\"title\\":\\"Pick one.\\",\\"options\\":[\\"A\\",\\"B\\"]}]}",
+                "internal_chat_message_metadata_passthrough":{"turn_id":"model-turn"}}},
+                {"type":"event_msg","payload":{"type":"item_completed","thread_id":"root","turn_id":"native-turn",
+                "item":{"type":"AgentMessage","id":"question-call","delivery":"async",
+                "questions":[{"title":"Pick one.","options":["A","B"]}]}}},
+                {"type":"response_item","payload":{"type":"function_call_output","call_id":"question-call","output":"{\\"accepted\\":true}"}},
+                {"type":"event_msg","payload":{"type":"user_message","message":"Answers to your questions (request: question-call):\\n\\nPick one.\\nB"}}
+                ]
+                """).getAsJsonArray();
+        List<JsonObject> messages = HistoryMessageInjector.convertCodexMessagesToFrontendBatch(records);
+        assertEquals(2, messages.size());
+        JsonObject raw = messages.get(0).getAsJsonObject().getAsJsonObject("raw");
+        JsonObject question = raw.getAsJsonArray("content").get(0).getAsJsonObject();
+        assertEquals("codex_user_input", question.get("name").getAsString());
+        assertEquals("question-call", question.get("id").getAsString());
+        assertEquals("native-turn", raw.get("codexTurnId").getAsString());
+        assertEquals(2, question.getAsJsonObject("input").getAsJsonArray("questions").get(0)
+                .getAsJsonObject().getAsJsonArray("options").size());
+        assertEquals("userMessage", messages.get(1).getAsJsonObject().getAsJsonObject("raw").get("codexItemType").getAsString());
+        assertFalse(messages.toString().contains("Request User Input Async"));
+    }
     /** Earlier pages must follow the selected session's directory rather than the IDE project root. */
     @Test
     public void delegatesEarlierClaudePagesWithTheSessionsCustomDirectory() throws Exception {
@@ -582,6 +615,198 @@ public class HistoryMessageInjectorTest {
     }
 
     @Test
+    public void fencingPendingLoadsKeepsTheCurrentCodexPageCursorUntilReplacementCommits() throws Exception {
+        HistoryMessageInjector injector = new HistoryMessageInjector(null);
+        java.lang.reflect.Field cursor = HistoryMessageInjector.class.getDeclaredField("nativeHistoryCursor");
+        cursor.setAccessible(true);
+        cursor.set(injector, new com.google.gson.JsonPrimitive("page-2"));
+        long beforeTransition = injector.invalidateCodexHistory();
+        cursor.set(injector, new com.google.gson.JsonPrimitive("page-2"));
+
+        // A transition starts: in-flight loads are fenced, but a refused switch must still page.
+        injector.fencePendingCodexLoads();
+        java.util.concurrent.atomic.AtomicInteger publications = new java.util.concurrent.atomic.AtomicInteger();
+        injector.publishIfCurrent(beforeTransition, publications::incrementAndGet);
+        assertEquals(0, publications.get());
+        assertEquals(new com.google.gson.JsonPrimitive("page-2"), cursor.get(injector));
+
+        // The replacement commits: the old session's cursor goes away.
+        injector.invalidateCodexHistory();
+        assertNull(cursor.get(injector));
+    }
+
+    @Test
+    public void queuedCodexSelectionCannotInterruptANewerGenerationOrBinding() {
+        HandlerContext context = new HandlerContext(null, null, null, null, null);
+        java.util.concurrent.atomic.AtomicInteger stops = new java.util.concurrent.atomic.AtomicInteger();
+        ClaudeSession oldSession = new ClaudeSession(null, null, null, null) {
+            @Override public CompletableFuture<Void> interrupt() {
+                stops.incrementAndGet();
+                return CompletableFuture.completedFuture(null);
+            }
+        };
+        context.setSession(oldSession);
+        HistoryMessageInjector injector = new HistoryMessageInjector(context);
+        long stale = injector.invalidateCodexHistory();
+        long current = injector.invalidateCodexHistory();
+        assertFalse(injector.quiesceForCodexHistory(stale, oldSession, "target").join());
+        context.setSession(new ClaudeSession(null, null, null, null));
+        assertFalse(injector.quiesceForCodexHistory(current, oldSession, "target").join());
+        assertEquals(0, stops.get());
+    }
+
+    @Test
+    public void codexSelectionWaitsForOldClaudeQuiescenceAndPreservesFailures() {
+        for (boolean failed : List.of(false, true)) {
+            HandlerContext context = new HandlerContext(null, null, null, null, null);
+            CompletableFuture<Void> stopped = new CompletableFuture<>();
+            ClaudeSession session = new ClaudeSession(null, null, null, null) {
+                @Override public CompletableFuture<Void> interrupt() { return stopped; }
+            };
+            session.setProvider("claude");
+            context.setSession(session);
+            HistoryMessageInjector injector = new HistoryMessageInjector(context);
+            CompletableFuture<Boolean> quiesced = injector.quiesceForCodexHistory(
+                    injector.invalidateCodexHistory(), session, "target");
+            assertFalse(quiesced.isDone());
+            if (failed) {
+                stopped.completeExceptionally(new IllegalStateException("Writer still active"));
+                assertTrue(quiesced.isCompletedExceptionally());
+            } else {
+                stopped.complete(null);
+                assertTrue(quiesced.join());
+            }
+            assertEquals(session, context.getSession());
+        }
+    }
+
+    /** A tokened same-session replacement waits for native work even after the UI busy flag clears. */
+    @Test
+    public void fullCodexReloadWaitsForTheCurrentTurnToStopAndPreservesFailures() {
+        for (boolean busy : List.of(false, true)) {
+            HandlerContext context = new HandlerContext(null, null, null, null, null);
+            CompletableFuture<Void> stopped = new CompletableFuture<>();
+            ClaudeSession session = new ClaudeSession(null, null, null, null) {
+                /** Keep replacement pending until the native stop has settled. */
+                @Override
+                public CompletableFuture<Void> interrupt() {
+                    return stopped;
+                }
+            };
+            session.setProvider("codex");
+            session.setSessionInfo("thread-current", "/project");
+            session.getState().beginTurn();
+            session.getState().setBusy(busy);
+            context.setSession(session);
+            HistoryMessageInjector injector = new HistoryMessageInjector(context);
+
+            CompletableFuture<Boolean> quiesced = injector.quiesceForCodexHistory(
+                    injector.invalidateCodexHistory(), session, "thread-current");
+            assertFalse(quiesced.isDone());
+            if (busy) {
+                stopped.completeExceptionally(new IllegalStateException("Writer still active"));
+                assertTrue(quiesced.isCompletedExceptionally());
+            } else {
+                stopped.complete(null);
+                assertTrue(quiesced.join());
+            }
+        }
+    }
+
+    @Test
+    public void historyRequestsRetainTheirTokensAcrossProviderDispatch() {
+        RecordingHistoryMessageInjector injector = new RecordingHistoryMessageInjector(createContext("D:/project/demo"));
+        injector.handleLoadSession("{\"sessionId\":\"hist-codex\",\"provider\":\"codex\",\"transitionToken\":\"request-C\"}",
+                "claude", null);
+        assertEquals("hist-codex", injector.loadedCodexSessionId);
+        assertEquals("request-C", injector.loadedTransitionToken);
+        String[] received = new String[1];
+        injector.handleLoadSession("{\"sessionId\":\"hist-claude\",\"provider\":\"claude\",\"transitionToken\":\"request-D\"}",
+                "codex", new HistoryHandler.SessionLoadCallback() {
+                    @Override public void onLoadSession(String id, String path, String provider, String model) {
+                        fail("The correlated callback must retain its token");
+                    }
+                    @Override public void onLoadSession(String id, String path, String provider, String model, String token) {
+                        received[0] = token;
+                    }
+                });
+        assertEquals("request-D", received[0]);
+    }
+
+    @Test
+    public void filenameAliasRestoresCanonicalIdentityAndMatchingHistoryPageMetadata() throws Exception {
+        Path directory = Files.createTempDirectory("codex-canonical-history");
+        String canonicalId = "97fdcbf7-b811-409b-9435-a83b50b9f7d3";
+        String filenameAlias = "rollout-2026-10-31T10-00-00-" + canonicalId;
+        Path transcript = directory.resolve(filenameAlias + ".jsonl");
+        var previousApplication = com.intellij.openapi.application.ApplicationManager.getApplication();
+        com.intellij.openapi.application.ApplicationManager.setApplication(
+                (com.intellij.openapi.application.Application) Proxy.newProxyInstance(
+                        com.intellij.openapi.application.Application.class.getClassLoader(),
+                        new Class<?>[]{com.intellij.openapi.application.Application.class}, (proxy, method, arguments) -> {
+                            if (method.getName().equals("invokeLater") && arguments[0] instanceof Runnable task) task.run();
+                            return method.getReturnType() == boolean.class ? false : null;
+                        }));
+        try (CodexHistoryPageIndex index = new CodexHistoryPageIndex()) {
+            Files.writeString(transcript, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"" + canonicalId
+                    + "\",\"cwd\":\"/fixture\"}}\n"
+                    + eventUserMessage("2026-10-31T10:00:00Z", "Keep this history") + "\n");
+            var constructor = CodexHistoryReader.class.getDeclaredConstructor(Path.class, com.google.gson.Gson.class);
+            constructor.setAccessible(true);
+            CodexHistoryReader reader = constructor.newInstance(directory, new com.google.gson.Gson());
+            List<String> events = new java.util.concurrent.CopyOnWriteArrayList<>();
+            List<JsonObject> pageMetadata = new java.util.concurrent.CopyOnWriteArrayList<>();
+            AtomicReference<List<String>> identity = new AtomicReference<>();
+            CountDownLatch finished = new CountDownLatch(1);
+            HandlerContext context = new HandlerContext(null, null, null, null, new HandlerContext.JsCallback() {
+                @Override public void callJavaScript(String name, String... args) {
+                    events.add(name);
+                    if (name.equals("beginCodexHistoryPage") || name.equals("completeCodexHistoryPage")) {
+                        pageMetadata.add(com.google.gson.JsonParser.parseString(args[0]).getAsJsonObject());
+                    }
+                    if (name.equals("historyLoadComplete") || name.equals("sessionTransitionFailed")) finished.countDown();
+                }
+                @Override public String escapeJs(String value) { return value; }
+                @Override public void executeJavaScript(String script) {
+                    if (script.contains("window.clearMessages")) events.add("clearMessages");
+                }
+            });
+            ClaudeSession session = new ClaudeSession(null, null, null, null);
+            context.setSession(session);
+            session.setCallback((ClaudeSession.SessionCallback) Proxy.newProxyInstance(
+                    ClaudeSession.SessionCallback.class.getClassLoader(), new Class<?>[]{ClaudeSession.SessionCallback.class},
+                    (proxy, method, args) -> {
+                        if (method.getName().equals("onSessionIdReceived")) {
+                            events.add("setSessionId");
+                            identity.set(List.of((String) args[0], (String) args[1]));
+                        }
+                        return null;
+                    }));
+            HistoryMessageInjector injector = new HistoryMessageInjector(context) {
+                @Override CodexHistoryPage readInitialCodexHistory(CodexHistoryReader ignored, String id, long generation) throws Exception {
+                    return index.read(reader, id, null, HISTORY_USER_TURN_LIMIT, () -> true);
+                }
+            };
+            injector.loadCodexSession(filenameAlias, null, "alias-request");
+            assertTrue("History load must settle", finished.await(10, TimeUnit.SECONDS));
+            assertFalse(events.toString(), events.contains("sessionTransitionFailed"));
+            assertEquals(List.of(canonicalId, "alias-request"), identity.get());
+            assertEquals(canonicalId, session.getSessionId());
+            assertTrue(events.indexOf("clearMessages") < events.indexOf("setSessionId"));
+            assertEquals(2, pageMetadata.size());
+            for (JsonObject metadata : pageMetadata) {
+                assertEquals(canonicalId, metadata.get("sessionId").getAsString());
+                assertEquals("alias-request", metadata.get("transitionToken").getAsString());
+            }
+            assertTrue(session.getMessages().stream().anyMatch(message -> message.content.contains("Keep this history")));
+        } finally {
+            com.intellij.openapi.application.ApplicationManager.setApplication(previousApplication);
+            Files.deleteIfExists(transcript);
+            Files.deleteIfExists(directory);
+        }
+    }
+
+    @Test
     public void handleLoadSessionUsesPayloadProviderAndResolvedCodexSessionId() {
         RecordingHistoryMessageInjector injector = new RecordingHistoryMessageInjector(createContext("D:/project/demo"));
         boolean[] callbackInvoked = {false};
@@ -593,6 +818,173 @@ public class HistoryMessageInjectorTest {
         );
 
         assertEquals("hist-codex", injector.loadedCodexSessionId);
+        assertFalse(callbackInvoked[0]);
+    }
+
+    /** Re-opening the active Codex thread refreshes in place; the destructive reload must not run. */
+    @Test
+    public void codexSameSessionSelectionRoutesToTheInPlaceSoftReload() {
+        HandlerContext context = createContext("D:/project/demo");
+        ClaudeSession current = new ClaudeSession(null, null, null, null);
+        current.setProvider("codex");
+        current.setSessionInfo("thread-current", "D:/project/demo");
+        context.setSession(current);
+        RecordingHistoryMessageInjector injector = new RecordingHistoryMessageInjector(context);
+        String[] forwarded = new String[2];
+
+        injector.handleLoadSession(
+                "{\"sessionId\":\"thread-current\",\"provider\":\"codex\"}",
+                "codex",
+                (sessionId, projectPath, provider, model) -> {
+                    forwarded[0] = sessionId;
+                    forwarded[1] = provider;
+                }
+        );
+
+        assertEquals("thread-current", forwarded[0]);
+        assertEquals("codex", forwarded[1]);
+        assertNull("The clear-and-restore load must stay untouched for the live session",
+                injector.loadedCodexSessionId);
+    }
+
+    /** A soft reload keeps the page's native cursor, and an earlier page already loading still lands. */
+    @Test
+    public void codexSoftReloadKeepsTheNativePageReaderAndInFlightPageLoads() throws Exception {
+        HandlerContext context = createContext("D:/project/demo");
+        ClaudeSession current = new ClaudeSession(null, null, null, null);
+        current.setProvider("codex");
+        current.setSessionInfo("thread-current", "D:/project/demo");
+        context.setSession(current);
+        RecordingHistoryMessageInjector injector = new RecordingHistoryMessageInjector(context);
+        long pendingGeneration = injector.invalidateCodexHistory();
+        var readerField = HistoryMessageInjector.class.getDeclaredField("nativeHistoryReader");
+        readerField.setAccessible(true);
+        var reader = new com.github.claudecodegui.provider.codex.CodexNativeHistoryReader(
+                null, current.getChannelId(), current.getCwd(), current.getSessionId());
+        readerField.set(injector, reader);
+        var cursorField = HistoryMessageInjector.class.getDeclaredField("nativeHistoryCursor");
+        cursorField.setAccessible(true);
+        JsonPrimitive cursor = new JsonPrimitive("opaque:older");
+        cursorField.set(injector, cursor);
+        java.util.concurrent.atomic.AtomicInteger retiredSelections = new java.util.concurrent.atomic.AtomicInteger();
+        injector.setCodexSessionSelectionListener(retiredSelections::incrementAndGet);
+
+        injector.handleLoadSession("{\"sessionId\":\"thread-current\",\"provider\":\"codex\"}", "codex", (id, cwd, provider, model) -> { });
+
+        assertEquals(reader, readerField.get(injector));
+        assertEquals(cursor, cursorField.get(injector));
+        assertEquals(0, retiredSelections.get());
+        boolean[] published = {false};
+        injector.publishIfCurrent(pendingGeneration, () -> published[0] = true);
+        assertTrue("A dropped earlier-page result would leave its spinner running", published[0]);
+    }
+
+    /** A full-thread reload spends the page cursor without orphaning a pending session switch. */
+    @Test
+    public void retiringTheCodexPageCursorKeepsPendingSelectionsPublishable() throws Exception {
+        List<String> jsCalls = new java.util.ArrayList<>();
+        HandlerContext context = new HandlerContext(null, null, null, null, new HandlerContext.JsCallback() {
+            @Override public void callJavaScript(String name, String... args) {
+                jsCalls.add(name + ":" + String.join(",", args));
+            }
+            @Override public String escapeJs(String value) {
+                return value;
+            }
+        });
+        HistoryMessageInjector injector = new HistoryMessageInjector(context);
+        long pendingGeneration = injector.invalidateCodexHistory();
+        var readerField = HistoryMessageInjector.class.getDeclaredField("nativeHistoryReader");
+        readerField.setAccessible(true);
+        readerField.set(injector, new com.github.claudecodegui.provider.codex.CodexNativeHistoryReader(
+                null, "channel", "/project", "thread-current"));
+        var cursorField = HistoryMessageInjector.class.getDeclaredField("nativeHistoryCursor");
+        cursorField.setAccessible(true);
+        cursorField.set(injector, new JsonPrimitive("opaque:older"));
+
+        injector.retireCodexPageCursor("thread-current");
+
+        assertNull(readerField.get(injector));
+        assertNull(cursorField.get(injector));
+        assertEquals(List.of("codexHistoryFullyLoaded:thread-current"), jsCalls);
+        boolean[] published = {false};
+        injector.publishIfCurrent(pendingGeneration, () -> published[0] = true);
+        assertTrue("A pending switch must still commit after the cursor is retired", published[0]);
+    }
+
+    /** An earlier page landing after a full-thread reload would sit above older turns, so it is refused. */
+    @Test
+    public void earlierCodexPageIsRefusedOnceAFullReloadHoldsTheWholeThread() throws Exception {
+        HandlerContext context = createContext("D:/project/demo");
+        ClaudeSession session = new ClaudeSession(null, null, null, null);
+        context.setSession(session);
+        HistoryMessageInjector injector = new HistoryMessageInjector(context);
+        session.getState().replaceMessages(turns("t4", "t5"));
+
+        assertTrue(injector.commitEarlierCodexPage(page("t2", "t3")));
+        assertEquals(List.of("t2", "t3", "t4", "t5"), contents(session));
+
+        // A soft reload commits every page of the thread.
+        session.getState().replaceMessages(turns("t0", "t1", "t2", "t3", "t4", "t5"));
+        var orchestratorField = ClaudeSession.class.getDeclaredField("messageOrchestrator");
+        orchestratorField.setAccessible(true);
+        Object orchestrator = orchestratorField.get(session);
+        var commits = orchestrator.getClass().getDeclaredField("committedHistoryLoads");
+        commits.setAccessible(true);
+        ((java.util.concurrent.atomic.AtomicLong) commits.get(orchestrator)).incrementAndGet();
+
+        assertFalse(injector.commitEarlierCodexPage(page("t0", "t1")));
+        assertEquals(List.of("t0", "t1", "t2", "t3", "t4", "t5"), contents(session));
+    }
+
+    private static JsonObject turnRow(String id) {
+        JsonObject row = new JsonObject();
+        row.addProperty("type", "user");
+        row.addProperty("content", id);
+        JsonObject raw = new JsonObject();
+        raw.addProperty("uuid", id);
+        row.add("raw", raw);
+        return row;
+    }
+
+    private static List<ClaudeSession.Message> turns(String... ids) {
+        List<ClaudeSession.Message> messages = new java.util.ArrayList<>();
+        for (String id : ids) {
+            messages.add(HistoryMessageInjector.toSessionMessage(turnRow(id)));
+        }
+        return messages;
+    }
+
+    private static HistoryMessageInjector.CodexHistoryPage page(String... ids) {
+        HistoryMessageInjector.CodexHistoryPage page = new HistoryMessageInjector.CodexHistoryPage();
+        for (String id : ids) {
+            page.messages.add(turnRow(id));
+        }
+        return page;
+    }
+
+    private static List<String> contents(ClaudeSession session) {
+        return session.getMessages().stream().map(message -> message.content).toList();
+    }
+
+    /** Same-session selection still performs the full swap while a transition token is present. */
+    @Test
+    public void codexSameSessionSelectionWithTransitionTokenKeepsTheFullLoad() {
+        HandlerContext context = createContext("D:/project/demo");
+        ClaudeSession current = new ClaudeSession(null, null, null, null);
+        current.setProvider("codex");
+        current.setSessionInfo("thread-current", "D:/project/demo");
+        context.setSession(current);
+        RecordingHistoryMessageInjector injector = new RecordingHistoryMessageInjector(context);
+        boolean[] callbackInvoked = {false};
+
+        injector.handleLoadSession(
+                "{\"sessionId\":\"thread-current\",\"provider\":\"codex\",\"transitionToken\":\"request-R\"}",
+                "codex",
+                (sessionId, projectPath, provider, model) -> callbackInvoked[0] = true
+        );
+
+        assertEquals("thread-current", injector.loadedCodexSessionId);
+        assertEquals("request-R", injector.loadedTransitionToken);
         assertFalse(callbackInvoked[0]);
     }
 
@@ -1330,6 +1722,24 @@ public class HistoryMessageInjectorTest {
         return line;
     }
 
+    /** A Codex running in WSL records Linux image paths; only the Windows CI job gets past the assumptions. */
+    @Test
+    public void restoresLocalImageRecordedByCodexInWsl() throws Exception {
+        assumeTrue("Skipped: not running on Windows", PlatformUtils.isWindows());
+        assumeTrue("Skipped: WSL not available", NodeDetector.resolveWslHomeUncPath() != null);
+        String imagePath = "/tmp/ccgui-history-image-test.png";
+        Process write = new ProcessBuilder("wsl", "-e", "sh", "-c", "echo image > " + imagePath).start();
+        assertTrue(write.waitFor(60, TimeUnit.SECONDS));
+        try {
+            JsonObject block = HistoryMessageInjector.createLocalImageBlock(imagePath);
+
+            assertNotNull("the image recorded in WSL must be restored", block);
+            assertEquals("image", block.get("type").getAsString());
+        } finally {
+            new ProcessBuilder("wsl", "-e", "rm", "-f", imagePath).start().waitFor(60, TimeUnit.SECONDS);
+        }
+    }
+
     private static JsonObject eventUserMessage(String timestamp, String text) {
         JsonObject line = new JsonObject();
         line.addProperty("timestamp", timestamp);
@@ -1509,6 +1919,7 @@ public class HistoryMessageInjectorTest {
 
     private static final class RecordingHistoryMessageInjector extends HistoryMessageInjector {
         private String loadedCodexSessionId;
+        private String loadedTransitionToken;
         private int historyLoadCompleteCount;
 
         private RecordingHistoryMessageInjector(HandlerContext context) {
@@ -1523,6 +1934,12 @@ public class HistoryMessageInjectorTest {
         @Override
         void loadCodexSession(String sessionId, String model) {
             this.loadedCodexSessionId = sessionId;
+        }
+
+        @Override
+        void loadCodexSession(String sessionId, String model, String transitionToken) {
+            this.loadedCodexSessionId = sessionId;
+            this.loadedTransitionToken = transitionToken;
         }
 
         @Override

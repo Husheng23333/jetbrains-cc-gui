@@ -1,4 +1,63 @@
 {
+  "startupHistory": {
+    "unloaded": "복원된 세션의 기록이 아직 로드되지 않았습니다.",
+    "loading": "세션 기록 로드 중…",
+    "loaded_one": "기록 메시지 {{count}}개를 로드했습니다.",
+    "loaded_other": "기록 메시지 {{count}}개를 로드했습니다.",
+    "missing": "저장된 기록이 없습니다. 새 세션이 준비되었습니다.",
+    "timeout": "기록 로드 시간이 초과되었습니다. 다시 시도를 선택하세요.",
+    "cancelled": "기록 로드를 취소했습니다. 다시 시도를 선택하세요.",
+    "failed": "기록을 로드하지 못했습니다. 다시 시도를 선택하세요.",
+    "superseded": "새 작업으로 기록 로드가 중단되었습니다. 다시 시도를 선택해 로드하세요.",
+    "load": "기록 로드",
+    "retry": "다시 시도",
+    "cancel": "취소"
+  },
+  "markdownReview": {
+    "legacyContextCard": "Markdown 검토 컨텍스트",
+    "contextCard": "Markdown 검토 · {{count}}개 항목",
+    "contextDetails": "소스 스냅샷 및 참조",
+    "settings": {
+      "submitShortcut": {
+        "label": "Markdown 주석 전송 단축키",
+        "enter": "Enter로 전송, Ctrl+Enter로 줄 바꿈",
+        "ctrlEnter": "Ctrl+Enter로 전송, Enter로 줄 바꿈",
+        "hint": "주석 추가 및 저장에 적용됩니다. Shift+Enter는 항상 줄 바꿈이며 macOS에서는 Command를 사용합니다. IME 확정은 전송하지 않습니다."
+      },
+      "title": "Markdown 검토(현재 프로젝트)",
+      "on": "사용",
+      "off": "사용 안 함",
+      "error": "검토 환경설정을 업데이트할 수 없습니다. 설정을 다시 열고 시도하세요.",
+      "enabled": {
+        "label": "Markdown 미리보기 주석 사용(베타)",
+        "hint": "현재 프로젝트의 기본 Markdown 미리보기에 검토 컨트롤을 추가합니다. 사용 안 함으로 설정하면 오버레이가 즉시 숨겨지고 기존 주석은 유지됩니다. 사용 설정 후 이미 열려 있는 미리보기는 한 번 다시 열어야 컨트롤이 표시됩니다."
+      },
+      "autoAddToChat": {
+        "label": "주석을 현재 채팅 초안에 자동 추가(베타)",
+        "hint": "기본적으로 꺼져 있습니다. 주석을 만들거나 편집하면 최신 스냅샷이 선택한 CC GUI 채팅 입력란에 추가됩니다. 보내기 전에 초안을 확인하세요. 주석을 완료하거나 삭제하면 자동으로 추가된 초안도 철회됩니다. 직접 추가한 주석과 인용은 유지됩니다."
+      },
+      "autoDeleteAffected": {
+        "label": "위치를 찾을 수 없게 된 주석 자동 삭제(베타)",
+        "hint": "인용의 시작 또는 끝 조각을 여전히 찾을 수 있는 동안에는 편집이나 줄바꿈이 있어도 '원문 변경됨'으로 유지하며 삭제하지 않습니다. 어떤 조각도 찾을 수 없을 때만 삭제합니다. 서식 있는 선택은 소스 블록 전체를 대상으로 할 수 있습니다. 정리는 완료를 의미하지 않으므로 에이전트가 미완료 항목을 보고해야 합니다. 자동 추가된 초안은 삭제된 주석과 함께 철회됩니다. 직접 추가와 인용은 영향을 받지 않습니다."
+      },
+      "persist": {
+        "label": "재시작 후에도 주석과 대기 중인 스냅샷 유지(베타)",
+        "hint": "기본적으로 꺼져 있습니다. 이 프로젝트를 여는 동안에만 유지됩니다. 사용하면 프로젝트 워크스페이스에 저장합니다. 사용 안 함으로 설정하면 다음 IDE 저장 시 저장된 내용이 제거되고 현재 주석은 유지됩니다. 채팅 메시지는 기존 저장 방식을 그대로 사용합니다. 꺼져 있는 동안 프로젝트를 닫거나 IDE를 다시 시작하면 주석과 보내지 않은 초안이 사라집니다."
+      },
+      "versionRequired": "Markdown 주석에는 IntelliJ IDEA 2024.3 이상이 필요합니다."
+    },
+    "count": "검토 항목 {{count}}개",
+    "removeBatch": "초안에서 검토 제거",
+    "remove": "제거",
+    "snapshot": "이 초안은 스냅샷입니다. 이후의 소스 주석은 반영되지 않습니다.",
+    "tooLarge": "검토가 너무 큽니다. 보내기 전에 항목을 줄이세요.",
+    "block": "소스 블록",
+    "source": "선택한 텍스트",
+    "quote": "인용",
+    "attached": "위치 확인됨",
+    "ambiguous": "가능한 위치가 여러 개임",
+    "orphaned": "원문이 변경됨"
+  },
   "common": {
     "ready": "준비 완료",
     "loading": "로딩 중",
@@ -26,6 +85,18 @@
     "optional": "선택사항"
   },
   "chat": {
+    "planUsage": {
+      "unavailable": "사용량을 사용할 수 없음",
+      "dash": "사용량 —",
+      "loading": "사용량 불러오는 중…",
+      "tooltipWindow": "{{period}} {{percent}}%",
+      "tooltipWindowWithReset": "{{period}} {{percent}}% · {{value}}에 초기화",
+      "clickToSwitch": "클릭하여 기간 전환",
+      "switchWindowHint": "기간 레이블을 클릭하여 창 전환",
+      "worstHint": "점은 최악의 창을 표시합니다({{color}})",
+      "worstDot": "최악의 창: {{color}}",
+      "stale": "데이터가 오래되었을 수 있습니다(새로고침 실패)"
+    },
     "sendMessage": "{{provider}}에게 메시지 보내기",
     "createNewSession": "새 세션 만들기",
     "confirmNewSession": "현재 세션에 메시지가 있습니다. 새 세션을 만드시겠습니까?",
@@ -44,6 +115,17 @@
     "currentMode": "현재 모드: {{mode}}",
     "currentModel": "현재 모델: {{model}}",
     "removeAttachment": "첨부파일 제거",
+    "queue": {
+      "edit": "대기열 메시지 편집",
+      "remove": "대기열에서 제거",
+      "editLabel": "대기열 메시지 {{position}} 편집",
+      "removeLabel": "대기열 메시지 {{position}} 제거",
+      "reorderLabel": "메시지 {{position}} 순서 변경",
+      "reorderHint": "드래그로 순서 변경, 포커스 후 화살표 키로 조정",
+      "mergedIntoDraft": "대기열 메시지가 현재 초안에 병합되었습니다",
+      "attachmentsNotRestored": "대기 중인 메시지의 첨부 파일을 복원하지 못했습니다",
+      "editBlockedAttachments": "첨부 파일을 복원할 수 없어 메시지를 대기열에 그대로 둡니다"
+    },
     "closePreview": "미리보기 닫기",
     "loadingDropdown": "로딩 중...",
     "modelsLoadFailed": "모델을 불러오지 못했습니다. 클릭하여 다시 시도",
@@ -81,6 +163,10 @@
     "localProject": "로컬",
     "disabled": "비활성화됨",
     "sdkNotInstalled": "{{provider}} SDK가 설치되어 있지 않습니다. 채팅을 시작하려면 SDK를 설치해주세요.",
+    "codexUltraCapabilitiesLoading": "Ultra 사용 가능 여부를 확인하고 있습니다. 모델 로딩이 끝나면 다시 전송해 주세요.",
+    "codexUltraCapabilitiesUnavailable": "Ultra 사용 가능 여부를 확인할 수 없습니다. 모델을 다시 불러오거나 다른 추론 수준을 선택하세요.",
+    "sessionTransitionTakingLonger": "세션 변경이 예상보다 오래 걸립니다. 다시 열어볼 수 있습니다. 대기 중인 메시지 전송은 일시 중지되어 있습니다.",
+    "sessionTransitionInProgress": "세션 변경이 이미 진행 중입니다. 잠시 기다려 주세요.",
     "sdkStatusLoading": "SDK 상태 확인 중...",
     "pasteImagePreparing": "붙여넣은 이미지 준비 중...",
     "sdkStatusUnavailable": "SDK 상태를 확인할 수 없습니다.",
@@ -102,6 +188,7 @@
     "totalDuration": "이번 응답 소요 시간",
     "tokenUsage": "입력 {{input}} / 출력 {{output}}",
     "tokenUsageDetail": "턴 합계 — 입력 {{input}} · 캐시 쓰기 {{cacheWrite}} · 캐시 읽기 {{cacheRead}} · 출력 {{output}}",
+    "tokenUsageThinking": "추론 {{thinking}}",
     "cacheHitsWithRatio": " (캐시 히트 {{tokens}}, {{ratio}})",
     "search": {
       "ariaLabel": "대화에서 검색",
@@ -116,8 +203,7 @@
       "matchCase": "대소문자 구분 (Alt+C)",
       "wholeWord": "단어 단위 일치 (Alt+W)",
       "regex": "정규식 (Alt+R)",
-      "invalidRegex": "유효하지 않은 정규식",
-      "openTooltip": "대화에서 검색 (Cmd/Ctrl+F)"
+      "invalidRegex": "유효하지 않은 정규식"
     },
     "compactSummary": {
       "receivedTime": "기록 시간",
@@ -144,8 +230,42 @@
     "codexReviewStarted": "Codex is reviewing the workspace",
     "codexDiffUsage": "Use /diff without arguments",
     "codexApprovalsUsage": "Use /approvals without arguments",
+    "codexCliOutdated": "Codex CLI {{version}}은(는) 오래된 버전이라 일부 모델과 권한 모드가 제대로 작동하지 않을 수 있습니다. {{minimumVersion}} 이상으로 업데이트하세요.",
     "codexSandboxConflict": "Codex automatic review cannot use danger-full-access. Choose workspace-write or request approval.",
-    "continueRefiningPlan": "이 계획 다듬기 계속하기:"
+    "continueRefiningPlan": "이 계획 다듬기 계속하기:",
+    "backgroundTasksRunning": "백그라운드 작업 {{count}}개 실행 중",
+    "backgroundTasksRunning_one": "백그라운드 작업 {{count}}개 실행 중",
+    "backgroundTasksRunning_other": "백그라운드 작업 {{count}}개 실행 중",
+    "stopBackgroundTasks": "백그라운드 작업 중지",
+    "backgroundTasksPill": "백그라운드 작업 {{count}}개",
+    "backgroundTasksPill_one": "백그라운드 작업 {{count}}개",
+    "backgroundTasksPill_other": "백그라운드 작업 {{count}}개",
+    "backgroundTasksTitle": "백그라운드 작업",
+    "backgroundTasksActive": "{{count}}개 실행 중",
+    "backgroundTasksActive_one": "{{count}}개 실행 중",
+    "backgroundTasksActive_other": "{{count}}개 실행 중",
+    "backgroundTasksStopAfterAnswer": "답변이 끝나면 중지할 수 있음",
+    "backgroundTaskDetails": {
+      "type": "유형",
+      "taskId": "작업 ID",
+      "runId": "실행 ID",
+      "parent": "상위 작업",
+      "elapsed": "실행 시간"
+    },
+    "backgroundTaskTypes": {
+      "local_bash": "명령",
+      "local_agent": "서브에이전트",
+      "remote_agent": "원격 에이전트",
+      "local_workflow": "워크플로",
+      "in_process_teammate": "팀원",
+      "monitor_mcp": "모니터",
+      "other": "작업"
+    },
+    "planUsage": {
+      "balanceLabel": "잔액: ",
+      "balanceRemaining": "잔액: {{value}}",
+      "balanceDetail": "총 {{total}} · 사용 {{used}}"
+    }
   },
   "settings": {
     "title": "설정",
@@ -192,6 +312,11 @@
         "label": "Claude CLI 경로 (재정의)",
         "placeholder": "예: /usr/local/bin/claude — 비워 두면 내장 SDK 사용",
         "hint": "선택 사항. 설정하면 플러그인이 내장된 @anthropic-ai/claude-agent-sdk 대신 이 바이너리를 실행합니다. 저장 시 데몬이 다시 시작됩니다."
+      },
+      "claudeConfigDir": {
+        "label": "Claude 설정 디렉터리 (재정의)",
+        "placeholder": "예: ~/.claude-work — 비워 두면 CLAUDE_CONFIG_DIR 또는 ~/.claude 사용",
+        "hint": "선택 사항. 채팅 기록, 세션 작업, Claude 프로세스가 ~/.claude 대신 이 디렉터리를 읽습니다. 플러그인의 settings.json과 MCP 서버는 이 디렉터리를 따르고, 스킬과 Hooks 페이지는 계속 ~/.claude를 사용합니다. 사용 통계는 이를 ~/.claude에 더해 합산하며(프로필별 아님), 실행 중인 통계 서버는 다음 동기화 때 반영합니다. 비워도 이미 집계된 사용량은 유지됩니다. 절대 경로 또는 ~/…를 사용하세요. WSL의 node를 쓰면 /home/me/.claude-work 같은 Linux 경로도 가능하며, Windows의 CLAUDE_CONFIG_DIR은 사용되지 않습니다. 같은 프로필의 Claude CLI 경로와 함께 사용하세요. 저장 시 데몬이 다시 시작됩니다."
       },
       "workingDirectory": {
         "label": "작업 디렉토리",
@@ -242,6 +367,17 @@
         "enabled": "활성화",
         "disabled": "비활성화",
         "hint": "활성화하면 프로젝트 트리에서 파일을 선택할 때 자동으로 파일 경로를 AI에 전송합니다 (참고: 파일 경로만 전송되며 파일 내용은 전송되지 않습니다). 비활성화하면 수동 조작이 필요합니다."
+      },
+      "loadHistoryOnStartup": {
+        "label": "시작 시 세션 기록 로드",
+        "enabled": "사용",
+        "disabled": "사용 안 함",
+        "hint": "복원된 세션의 기록을 자동으로 로드합니다. 실패하거나 시간이 초과되면 수동으로 다시 시도하세요."
+      },
+      "historyLoadTimeout": {
+        "label": "기록 로드 제한 시간",
+        "unit": "초",
+        "hint": "자동 복원과 수동 로드에 동일한 제한 시간(5~120초)을 적용합니다. 대화에서 다시 시도할 수 있습니다."
       },
       "promptEnhancer": {
         "label": "Prompt Enhancer",
@@ -362,6 +498,12 @@
         "enabled": "활성화",
         "disabled": "비활성화",
         "hint": "비활성화하면 메시지가 있는 세션에서 새로 만들기를 선택할 때 확인 대화 상자 없이 바로 새 세션을 만듭니다."
+      },
+      "sessionGitRepositoryMatching": {
+        "label": "Git 원격 저장소로 세션 매칭",
+        "enabled": "사용",
+        "disabled": "사용 안 함",
+        "hint": "정규화된 원격 호스트, 소유자, 저장소가 같은 다른 디렉터리의 Codex 및 Claude Code 기록도 포함합니다. Git 정보를 읽을 수 없으면 작업 디렉터리로 매칭합니다."
       }
     },
     "providers": "제공자 관리",
@@ -568,6 +710,38 @@
     "wechatPay": "WeChat Pay",
     "paypal": "PayPal",
     "provider": {
+      "backup": {
+        "exportInvalidConfig": "내보내기 실패: 저장된 공급자 설정이 검증을 통과하지 못했습니다. 백업 파일이 생성되지 않았습니다.",
+        "errorProvider": "저장된 공급자 중 {{index}}번째 항목을 확인하세요(로컬 설정 및 CLI 로그인 항목 제외).",
+        "errorField": "필드: {{field}}.",
+        "import": "가져오기",
+        "export": "내보내기",
+        "importFile": "CC GUI 백업에서 가져오기",
+        "importTitle": "{{engine}} 공급자 가져오기",
+        "exportTitle": "{{engine}} 공급자 내보내기",
+        "scope": "현재 탭에 저장된 공급자 설정(키 포함)만 전송합니다. 로컬 CLI 로그인 및 활성화 상태는 포함하지 않습니다.",
+        "mergeHint": "신뢰할 수 있는 파일만 가져오세요. 동일한 설정은 건너뛰고 다른 설정은 추가하며, 덮어쓰거나 자동 활성화하지 않습니다. 이름, 메모, ID 및 생성 시간은 중복 판정에서 제외됩니다.",
+        "selectFile": "설정 파일 선택",
+        "passwordOptional": "내보내기 암호(선택 사항)",
+        "passwordRequired": "파일 암호 입력",
+        "confirmPassword": "암호 확인",
+        "plaintextWarning": "확인: 암호를 설정하지 않으면 API 키가 일반 텍스트로 내보내집니다. 파일을 안전하게 보관하세요.",
+        "passwordHint": "8자 이상의 길고 고유한 암호를 권장합니다. 잊어버린 암호는 복구할 수 없습니다.",
+        "passwordShort": "암호는 8자 이상이어야 합니다.",
+        "passwordMismatch": "암호가 일치하지 않습니다.",
+        "working": "처리 중입니다. 잠시 기다려 주세요…",
+        "importSuccess": "가져오기 완료: {{imported}}개 추가, 중복 설정 {{skipped}}개 건너뜀.",
+        "exportSuccess": "설정을 내보냈습니다.",
+        "exportPartial": "공급자 {{exported}}개를 내보냈습니다. 검증을 통과하지 못한 저장된 공급자 {{skipped}}개를 건너뛰었습니다: {{positions}}(번호는 로컬 설정 및 CLI 로그인 항목 제외).",
+        "invalidFile": "잘못된 파일, 지원하지 않는 버전 또는 잘못된 설정입니다. 가져오지 않았습니다.",
+        "wrongEngine": "파일 유형이 현재 탭과 다릅니다. 해당 Claude Code / Codex 탭을 선택하세요.",
+        "tooLarge": "파일 또는 설정이 너무 큽니다(파일 최대 8 MiB, 공급자 최대 2000개).",
+        "empty": "처리할 공급자 설정이 없습니다.",
+        "wrongPassword": "암호가 틀렸거나 암호화 파일이 손상되었습니다. 가져오지 않았습니다.",
+        "failed": "작업에 실패했습니다. 파일 권한과 설정을 확인한 후 다시 시도하세요.",
+        "busy": "다른 가져오기/내보내기가 진행 중입니다. 나중에 다시 시도하세요.",
+        "timeout": "결과 대기 시간이 초과되었습니다. 작업이 진행 중일 수 있으므로 다시 시도하기 전에 목록이나 내보낸 파일을 확인하세요."
+      },
       "currentConfig": "현재 ClaudeCode 설정",
       "loading": "로딩 중...",
       "noConfig": "설정 없음",
@@ -955,6 +1129,11 @@
         "confirmExport": "내보내기 확인"
       }
     },
+    "gemini": {
+      "idleReapLabel": "출력 없는 턴 자동 중지",
+      "idleReapHelp": "지정한 분 동안 출력이 없는 Gemini 턴을 종료합니다. 보통 CLI가 대화형 프롬프트에서 멈췄거나 백엔드가 멈춘 경우입니다. 0이면 자동 중지가 비활성화됩니다.",
+      "idleReapDisabled": "비활성화됨"
+    },
     "cli": {
       "hint": "These CLIs must be installed and configured in your system terminal. The plugin only detects installation status and version — it will never install them for you. Confirm each CLI works in the terminal before coming back here to use it.",
       "refresh": "Re-check",
@@ -1002,6 +1181,10 @@
         "omp": {
           "name": "OMP CLI",
           "description": "멀티 프로바이더 모델을 지원하는 Oh My Pi 터미널 코딩 에이전트"
+        },
+        "gemini": {
+          "name": "Antigravity CLI",
+          "description": "Google Antigravity 터미널 코딩 에이전트 (agy)"
         }
       },
       "installDialog": {
@@ -1023,6 +1206,132 @@
       "visibility": {
         "hide": "제공자 전환 메뉴에서 숨기기",
         "show": "제공자 전환 메뉴에 표시"
+      }
+    },
+    "hooks": {
+      "title": "Hooks",
+      "description": "Codex 및 Claude Code 훅을 확인하고 안전하게 편집합니다.",
+      "refresh": "새로 고침",
+      "provider": "제공자",
+      "scope": "범위",
+      "all": "전체",
+      "allProviders": "모든 제공자",
+      "allScopes": "모든 범위",
+      "global": "사용자",
+      "project": "프로젝트",
+      "projectLocal": "프로젝트(로컬 재정의)",
+      "search": "Hooks 검색",
+      "searchPlaceholder": "이벤트, 명령 또는 경로 검색",
+      "noMatches": "조건에 맞는 Hook이 없습니다.",
+      "toggleUnavailable": "런타임 동작이 확인될 때까지 개별 전환을 사용할 수 없습니다.",
+      "enabled": "활성화됨",
+      "disabled": "비활성화됨",
+      "enable": "Hook 활성화",
+      "disable": "Hook 비활성화",
+      "managedToggleHint": "CC GUI가 관리하는 전환입니다. 원래 설정을 보존하고 복원할 수 있습니다.",
+      "nativeToggleHint": "Codex 사용자 설정을 변경합니다. 실행은 신뢰, 기능 설정 및 정책의 적용도 받습니다.",
+      "toggleFailed": "Hook 전환 실패",
+      "loading": "Hook 위치 검색 중…",
+      "empty": "발견된 Hook이 없습니다.",
+      "valid": "형식 인식됨",
+      "validationWarning": "검토 필요",
+      "matcher": "매처",
+      "noCommand": "명령 없음",
+      "readOnly": "읽기 전용",
+      "viewSource": "소스 보기",
+      "editSource": "소스 편집",
+      "sourcePreview": "Hook 소스 미리 보기",
+      "sourceTab": "소스",
+      "detailsTab": "세부 정보",
+      "viewMode": "Hook 보기",
+      "loadingSource": "소스 로드 중…",
+      "sourceEditor": "Hook 소스 편집기",
+      "affectedFile": "영향받는 파일",
+      "backupDirectory": "백업 디렉터리",
+      "latestBackup": "현재 편집 세션의 마지막 백업 복원",
+      "lastModified": "마지막 수정",
+      "event": "이벤트",
+      "format": "형식",
+      "revision": "리비전",
+      "command": "명령",
+      "validationIssues": "검증 문제",
+      "providerFields": "제공자별 필드",
+      "noProviderFields": "제공자별 필드 없음",
+      "none": "없음",
+      "reviewChanges": "변경 검토",
+      "hideChanges": "차이 숨기기",
+      "noChanges": "저장할 변경 없음",
+      "technicalInfo": "기술 정보",
+      "moreActions": "추가 작업",
+      "conflictTitle": "소스가 외부에서 변경되었습니다",
+      "conflictDescription": "외부 버전을 다시 로드하거나 초안을 유지하고 최신 리비전과 동기화하세요.",
+      "reloadExternal": "외부 버전 다시 로드",
+      "keepDraft": "초안 유지 및 동기화",
+      "discardDraft": "초안 버리기",
+      "discardChangesTitle": "저장하지 않은 변경을 버릴까요?",
+      "discardChangesMessage": "변경이 저장되지 않았습니다. 닫으면 복구할 수 없습니다.",
+      "backupOnSave": "저장 전에 백업 생성",
+      "save": "저장",
+      "saving": "저장 중…",
+      "restore": "현재 편집 세션의 마지막 백업 복원",
+      "saveFailed": "저장 실패",
+      "sourceLoadFailed": "소스 다시 로드 실패",
+      "noPreview": "미리 보기 없음.",
+      "sourceNotice": "소스 {{count}}개를 검토해야 합니다. 해당 항목의 작업이 제한됩니다.",
+      "sharedProjectWarning": "프로젝트 설정은 커밋되어 다른 사용자에게 영향을 줄 수 있습니다. 공유 전에 파일 차이를 확인하세요.",
+      "bridgeUnavailable": "IDE 연결을 사용할 수 없습니다. 설정 페이지를 다시 여세요.",
+      "sourceTimeout": "읽기 시간이 초과되었습니다. 편집 전에 소스를 다시 로드하세요.",
+      "mutationTimeout": "확인 시간이 초과되었습니다. 이미 저장되었을 수 있으므로 재시도 전에 새로 고치세요.",
+      "mutationConfirmedLate": "지연된 저장 확인을 받았습니다. 초안은 유지됩니다. 소스를 다시 로드하세요.",
+      "issues": {
+        "COMMAND_MISSING": "명령 없음",
+        "TYPE_MISSING": "유형 없음",
+        "HOOKS_NOT_OBJECT": "hooks는 객체여야 합니다",
+        "SETTINGS_NOT_OBJECT": "설정은 객체여야 합니다",
+        "INVALID_JSON": "잘못된 JSON",
+        "HOOK_ENTRY_NOT_OBJECT": "Hook 항목은 객체여야 합니다",
+        "INVALID_TOML": "잘못된 TOML",
+        "CODEX_HOOKS_NOT_TABLE": "Codex hooks는 테이블이어야 합니다",
+        "CODEX_HOOK_EVENT_NOT_ARRAY": "Hook 이벤트는 배열이어야 합니다",
+        "CODEX_HOOK_ENTRY_NOT_TABLE": "Hook 항목은 테이블이어야 합니다",
+        "CODEX_ENABLED_INVALID": "활성화 필드가 잘못되었습니다",
+        "CODEX_MATCHER_INVALID": "매처 필드가 잘못되었습니다",
+        "CODEX_COMMANDS_INVALID": "유효한 명령 또는 MCP 도구가 없습니다",
+        "CODEX_HOOKS_FEATURE_DISABLED": "Hooks 기능이 비활성화되었습니다",
+        "READ_FAILED": "읽기 실패",
+        "CODEX_EVENT_UNSUPPORTED": "검증된 형식에서 지원하지 않는 이벤트입니다",
+        "CODEX_HANDLER_UNSUPPORTED": "검증된 형식에서 지원하지 않는 처리 유형입니다",
+        "CODEX_HOOK_FILE_FIELDS_INVALID": "Hook 파일 필드가 잘못되었습니다",
+        "CODEX_STATE_INLINE_UNSUPPORTED": "인라인 상태를 안전하게 편집할 수 없습니다. 상태 테이블을 사용하세요.",
+        "LINKED_SOURCE_READ_ONLY": "링크 파일은 읽기 전용입니다. 원본 파일을 직접 편집하세요.",
+        "HOOK_SOURCE_UNAVAILABLE": "소스 파일을 사용할 수 없습니다."
+      },
+      "sharedToggleTitle": "공유 프로젝트 설정 변경 확인",
+      "sharedToggleMessage": "공유 .claude/settings.json 파일이 변경되어 다른 기여자에게 영향을 줄 수 있습니다. 비활성화된 훅의 복구 정보는 이 컴퓨터에만 저장됩니다.",
+      "confirmSharedToggle": "공유 설정 변경",
+      "sensitiveSourceWarning": "이 파일에는 자격 증명과 민감한 설정이 포함될 수 있습니다. 편집할 준비가 되면 표시하세요.",
+      "revealSource": "설정 표시",
+      "errors": {
+        "HOOK_SHARED_CONFIRMATION_REQUIRED": "먼저 공유 프로젝트 설정 변경을 확인하세요.",
+        "HOOK_CATALOG_TIMEOUT": "훅 새로 고침 시간이 초과되었습니다. 다른 훅을 변경하기 전에 새로 고치세요.",
+        "HOOK_REVISION_CONFLICT": "이 페이지 밖에서 파일이 변경되었습니다. 새로 고친 후 다시 시도하세요.",
+        "HOOK_RESTORE_CONFLICT": "복원할 수 없습니다. 파일에서 이 이벤트가 더 이상 목록이 아닙니다. 파일을 수정한 후 다시 시도하세요.",
+        "HOOK_TOGGLE_LOCKED": "이 파일에 다른 변경이 진행 중입니다. 잠시 후 다시 시도하세요.",
+        "HOOK_TOGGLE_LOCK_FAILED": "이 변경을 위해 파일을 잠글 수 없습니다.",
+        "HOOK_FILE_LOCKED": "이 파일에 다른 변경이 진행 중입니다. 잠시 후 다시 시도하세요.",
+        "HOOK_NOT_FOUND": "이 Hook이 더 이상 파일에 없습니다. 목록을 새로 고치세요.",
+        "HOOK_NOT_DISABLED": "이 Hook은 비활성화되어 있지 않습니다. 목록을 새로 고치세요.",
+        "HOOK_ALREADY_DISABLED": "이 Hook은 이미 비활성화되어 있습니다. 목록을 새로 고치세요.",
+        "HOOK_STATE_WRITE_FAILED": "비활성화 기록을 저장할 수 없습니다. 파일 변경은 가능한 범위에서 되돌렸습니다.",
+        "HOOK_TOGGLE_FAILED": "이 Hook을 변경할 수 없습니다.",
+        "INVALID_HOOK_PATH": "이 파일은 여기서 변경할 수 없습니다. 링크 파일과 알려진 위치 밖의 파일은 읽기 전용입니다.",
+        "INVALID_BACKUP_PATH": "백업 파일을 사용할 수 없습니다.",
+        "SOURCE_TOO_LARGE": "파일이 128 KB를 초과하여 여기서 편집할 수 없습니다.",
+        "INVALID_REQUEST": "요청이 잘못되었습니다. 페이지를 새로 고친 후 다시 시도하세요.",
+        "WRITE_FAILED": "파일을 저장할 수 없습니다.",
+        "RESTORE_FAILED": "백업을 복원할 수 없습니다.",
+        "UNSUPPORTED_HOOK_PROVIDER": "이 종류의 Hook은 여기서 변경할 수 없습니다.",
+        "UNKNOWN_ERROR": "알 수 없는 오류입니다."
       }
     }
   },
@@ -1066,6 +1375,16 @@
     "cancelEditButton": "취소",
     "titleTooLong": "제목이 너무 깁니다 (최대 50자)",
     "titleUpdated": "제목 업데이트됨",
+    "regenerateTitle": "대화 내용으로 제목 다시 생성",
+    "titleRegenerated": "제목이 다시 생성되었습니다",
+    "titleRegenerateFailed": {
+      "generic": "제목 다시 생성에 실패했습니다",
+      "emptySession": "제목 생성에 사용할 대화 내용이 없습니다",
+      "disabled": "설정에서 AI 제목 생성이 꺼져 있습니다",
+      "sessionNotFound": "세션 기록 파일을 찾을 수 없습니다",
+      "generationFailed": "제목 생성에 실패했습니다. 잠시 후 다시 시도해 주세요",
+      "customTitle": "이 세션에는 수동 제목이 설정되어 있어 AI 제목보다 우선 적용됩니다"
+    },
     "copySessionId": "CLI resume용 세션 ID 복사",
     "sessionIdCopied": "세션 ID 복사됨",
     "copyFailed": "복사 실패",
@@ -1103,7 +1422,12 @@
       "claude-vscode": "이 세션은 VS Code 확장에서 생성되었으며 CLI에 기본적으로 표시되지 않습니다. 터미널 CLI의 /resume 목록에 표시하려면 'CLI로 변환'을 클릭하세요",
       "remote": "이 세션은 원격 Claude Code 인스턴스에서 생성되었습니다"
     },
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "sessionInUse": "사용 중인 세션은 삭제할 수 없습니다.",
+    "deleteFailed": "세션을 삭제하지 못했습니다. 다시 시도해 주세요.",
+    "confirmDirectoryTitle": "다른 디렉터리에서 세션을 여시겠습니까?",
+    "confirmDirectoryMessage": "명령과 파일 변경은 아래 디렉터리에서 실행됩니다.",
+    "executionDirectory": "실행 위치"
   },
   "permission": {
     "dialogTitle": "권한 요청",
@@ -1135,7 +1459,15 @@
     "codexDeliveryFailed": "Codex가 선택을 받지 못했습니다({{error}}). 대화가 계속되지 않으면 중지를 누른 뒤 다시 보내 주세요.",
     "codexDeliveryUnconfirmed": "Codex가 아직 선택을 받았는지 확인하지 못했습니다({{error}}). 선택이 여전히 적용될 수 있으니 다시 응답하지 마세요. 대화가 계속되지 않으면 중지를 누른 뒤 다시 보내 주세요."
   },
+  "modelConfig": {
+    "approvals": "승인",
+    "ultracode": {
+      "label": "Ultracode",
+      "description": "작업을 자동으로 위임하는 Claude 기본 워크플로입니다. 선택한 추론 수준을 유지합니다."
+    }
+  },
   "askUserQuestion": {
+    "ompTitle": "OMP에서 몇 가지 질문이 있습니다",
     "title": "Claude가 질문이 있습니다",
     "progress": "질문 {{current}} / {{total}}",
     "multiSelectHint": "여러 옵션을 선택할 수 있습니다",
@@ -1149,7 +1481,11 @@
     "timeoutWarning": "곧 답변해주세요, {{seconds}}초 후 대화상자가 닫힙니다",
     "expand": "펼치기",
     "collapse": "접기",
-    "clickToAnswer": "클릭하여 답변하기"
+    "clickToAnswer": "클릭하여 답변하기",
+    "recordTitle": "Codex 질문",
+    "recordAnswer": "내 답변",
+    "recordSkipped": "건너뜀(답변하지 않고 닫음)",
+    "answerNotSent": "다른 대화가 열려 있어 Codex 질문에 대한 답변을 보내지 못했습니다. 원래 대화로 돌아가 답변을 다시 보내 주세요."
   },
   "planApproval": {
     "title": "계획 승인 대기 중",
@@ -1182,7 +1518,11 @@
     "invalidJsonConfig": "잘못된 JSON 설정 형식",
     "providerAdded": "제공자 추가됨",
     "providerUpdated": "제공자 업데이트됨",
-    "providerDeleted": "제공자 삭제됨"
+    "providerDeleted": "제공자 삭제됨",
+    "codexSettingsDispatchFailed": "Codex 설정을 IDE로 보낼 수 없습니다. 대화를 다시 열고 재시도하세요.",
+    "codexSettingsRuntimeInactive": "Codex 실행 환경이 비활성 상태입니다. 채팅을 다시 열고 재시도하세요.",
+    "codexSettingsServiceUnavailable": "Codex 서비스를 사용할 수 없습니다. 채팅을 다시 열고 재시도하세요.",
+    "codexSettingsUpdateFailed": "Codex 설정을 확인하지 못했습니다. 채팅을 다시 열고 재시도하세요."
   },
   "config": {
     "clickToCopy": "클릭하여 복사",
@@ -1522,6 +1862,12 @@
     "bashGroupCompleted": "완료됨",
     "bashGroupAllCompleted": "모두 완료",
     "bashGroupFailed": "실패",
+    "bashGroupCopyCommand": "명령 복사",
+    "bashGroupCopyOutput": "출력 복사",
+    "bashGroupOutput": "출력",
+    "bashGroupOutputFailed": "실패",
+    "bashGroupRunning": "실행 중…",
+    "bashGroupNoOutput": "(출력 없음)",
     "updatePlan": "계획 업데이트",
     "applyPatch": "패치 적용",
     "reportFindings": {
@@ -1568,6 +1914,7 @@
       "loading": "에이전트 프로세스 로드 중…",
       "unavailable": "세션에 id가 생기기 전까지 프로세스 로그를 사용할 수 없습니다.",
       "reportGenerated": "구조화된 분석 보고서가 생성됨",
+      "historyTruncated": "기록 {{count}}개를 생략하여 내역을 줄였습니다. 초기 작업과 최근 활동은 유지됩니다.",
       "unitMs": "ms",
       "unitS": "초",
       "unitTools": "도구",
@@ -1746,6 +2093,9 @@
     }
   },
   "models": {
+    "gemini": {
+      "vanishedSelection": "{{model}} 모델을 더 이상 사용할 수 없어 CLI 기본 모델로 되돌렸습니다."
+    },
     "addModel": "모델 추가",
     "searchPlaceholder": "모델 검색",
     "clearSearch": "검색 지우기",
@@ -1786,13 +2136,13 @@
         "label": "Haiku 4.5",
         "description": "Haiku 4.5 · 빠른 응답에 최적"
       },
+      "fable52": {
+        "label": "Fable 5.2",
+        "description": "Fable 5.2 · 가장 강력함 · Mythos급"
+      },
       "fable51": {
         "label": "Fable 5.1",
-        "description": "Fable 5.1 · 가장 강력함 · Mythos급"
-      },
-      "fable5": {
-        "label": "Fable 5",
-        "description": "Fable 5 · 이전 세대 Fable 모델"
+        "description": "Fable 5.1 · 이전 세대 Fable 모델"
       }
     },
     "longContext": {
@@ -1867,6 +2217,12 @@
       "shortLabel": "완전 자동",
       "tooltip": "모든 권한 검사 우회",
       "description": "완전 자동화, 모든 권한 검사를 우회합니다 [주의하여 사용]"
+    },
+    "sandbox": {
+      "label": "샌드박스 모드",
+      "shortLabel": "샌드박스",
+      "tooltip": "샌드박스에서 실행(Gemini CLI 전용)",
+      "description": "터미널 제한이 활성화된 샌드박스에서 실행합니다(Gemini CLI)"
     }
   },
   "workspaceDiff": {
@@ -1907,6 +2263,25 @@
       "label": "완전 자동",
       "tooltip": "Codex approval_policy=never – 확인 없이 명령을 실행하고 파일을 작성합니다 (워크스페이스 샌드박스는 여전히 적용됨).",
       "description": "자율 모드. Codex가 편집과 셸 명령을 즉시 실행합니다."
+    }
+  },
+  "ompApprovals": {
+    "title": "OMP 승인 모드 선택",
+    "default": {
+      "label": "기본값",
+      "description": "미설정 시 완전 자동(OMP의 tools.approvalMode)"
+    },
+    "alwaysAsk": {
+      "label": "묻기",
+      "description": "편집과 명령 실행 전에 묻습니다"
+    },
+    "write": {
+      "label": "편집 자동 승인",
+      "description": "명령 실행 전에만 묻습니다"
+    },
+    "yolo": {
+      "label": "완전 자동",
+      "description": "묻지 않습니다"
     }
   },
   "ompModes": {
@@ -1951,7 +2326,7 @@
       "label": "ZCode"
     },
     "gemini": {
-      "label": "Gemini Cli"
+      "label": "Antigravity CLI"
     },
     "opencode": {
       "label": "OpenCode"
@@ -2033,6 +2408,10 @@
     "xhigh": {
       "label": "최대",
       "description": "최대 추론 깊이"
+    },
+    "ultra": {
+      "label": "Ultra",
+      "description": "최대 추론 깊이와 자동 작업 위임"
     }
   },
   "errorBoundary": {
@@ -2070,6 +2449,16 @@
     "codexNetworkErrorChecks": "확인해주세요:\n1. 네트워크 연결이 정상인지\n2. 프록시를 사용하는 경우 프록시 설정이 올바른지\n3. 방화벽이 연결을 차단하고 있지 않은지",
     "codexError": "Codex 오류:",
     "codexErrorCheck": "네트워크 연결과 Codex 설정을 확인해주세요",
+    "geminiAuthRequired": "Gemini CLI 인증이 필요합니다:",
+    "geminiAuthCause": "- 원인: Gemini CLI (agy)에 로그인하지 않았거나 자격 증명이 만료되었습니다.",
+    "geminiAuthResolution": "- 해결 방법: 외부 터미널에서 'agy'를 실행하여 대화형 Google 로그인 절차를 완료하세요.",
+    "geminiAuthNote": "- 참고: 이 플러그인은 Google 자격 증명을 관리하지 않으며 플러그인 내에서 Google 로그인을 수행하지 않습니다.",
+    "geminiErrorDetails": "오류 세부 정보",
+    "geminiIdleReapStopped": "Gemini 턴이 자동 중지되었습니다: Gemini CLI (agy)에서 {{window}} 동안 출력이 없었습니다.",
+    "geminiIdleReapCauseAlive": "- 가능한 원인: CLI 프로세스는 살아 있지만 출력이 없습니다. 대화형 프롬프트(주로 인증)에서 멈추었거나 백엔드/네트워크 정체로 지연되고 있을 가능성이 높습니다.",
+    "geminiIdleReapCauseExited": "- 가능한 원인: CLI 프로세스가 이미 결과 없이 종료되었습니다.",
+    "geminiIdleReapWhatToDo": "- 조치 방법: 외부 터미널에서 'agy'를 실행해 로그인 상태를 확인한 후 취소하고 다시 시도하세요. 턴이 정상적으로 조용한 경우(예: 긴 빌드)라면 상한을 늘리세요.",
+    "geminiIdleReapSetting": "- 이 상한은 설정할 수 있습니다: Gemini 플러그인 설정에서 gemini.idleReapMinutes를 설정하세요(0이면 자동 중지를 비활성화).",
     "codexThinkingHint": "Codex가 추론 항목을 반환하지 않았습니다. 사고 과정이 여전히 보이지 않으면 docs/codex/docs/config.md에서 hide_agent_reasoning/show_raw_agent_reasoning 설정을 참조하고, OpenAI 계정이 인증되었는지 확인해주세요.",
     "userDeniedPermission": "사용자가 {{toolName}} 도구의 권한을 거부했습니다",
     "userDidNotProvideAnswers": "사용자가 답변을 제공하지 않았습니다",
@@ -2082,7 +2471,19 @@
     "uploadedImages": "{{count}}개 이미지 업로드됨",
     "uploadedAttachments": "첨부파일 업로드됨",
     "emptyMessage": "빈 메시지",
-    "attachment": "첨부파일"
+    "attachment": "첨부파일",
+    "workspaceSubstituted": "[알림] 작업 디렉터리가 대체되었습니다: 요청 \"{{requested}}\", 사용 \"{{effective}}\" ({{reason}}).",
+    "workspaceReasonUnsafe": "안전하지 않은 작업 디렉터리",
+    "workspaceReasonPluginInternal": "플러그인 내부 디렉터리",
+    "workspaceReasonMissing": "디렉터리가 존재하지 않습니다",
+    "workspaceReasonNotADirectory": "디렉터리가 아닙니다",
+    "workspaceReasonTemporary": "임시 디렉터리",
+    "attachmentNotDelivered": {
+      "notice": "[알림] 첨부 파일을 전달하지 못했습니다: \"{{name}}\" ({{reason}}).",
+      "nonImage": "이미지 첨부 파일만 지원됩니다",
+      "tooLarge": "이미지가 이미지당 2 MB 제한을 초과합니다",
+      "invalid": "이미지 데이터가 없거나 읽을 수 없습니다"
+    }
   },
   "changelog": {
     "title": "새로운 기능",
@@ -2108,14 +2509,85 @@
     "updateClaudeSdkCustomCli": "SDK를 {{version}}(으)로 업데이트했지만 플러그인은 직접 지정한 Claude CLI({{path}})를 실행합니다. 방법 2로 업데이트하세요.",
     "updateClaudeSdkAlreadyLatest": "{{version}}은(는) 이 플러그인이 지원하는 최신 SDK이지만, 이 모델에는 더 새로운 Claude Code가 필요합니다. 새 플러그인 버전이 나오면 플러그인을 업데이트하거나 다른 모델을 선택하세요.",
     "codexWriterConflict": {
-      "title": "Codex 스레드 사용 중",
-      "intro": "다른 Codex 턴이나 클라이언트가 이 대화에 기록 중이어서 이번 전송을 시작할 수 없습니다.",
-      "reason": "이 대화를 사용하는 클라이언트에서 턴을 중지하고 종료를 확인한 뒤 다시 보내세요."
+      "title": "Codex 대화가 사용 중입니다",
+      "intro": "다른 Codex 클라이언트 또는 채팅 창이 이 대화의 쓰기 권한을 보유하고 있습니다.",
+      "reason": "대화가 만료되었다는 뜻은 아닙니다. 플러그인은 잠금을 삭제하거나 다른 클라이언트를 자동으로 중지하지 않습니다.",
+      "solutions": {
+        "releaseWriter": {
+          "title": "사용 중인 클라이언트에서 대화 해제",
+          "step0": "이 대화를 사용하는 Codex 클라이언트 또는 채팅 창에서 작업을 중지하고 대화를 닫거나 해제하세요.",
+          "step1": "해제된 것을 확인한 후 여기서 다시 보내세요. 강제로 접근하기 위해 쓰기 잠금 파일을 삭제하지 마세요."
+        }
+      }
+    },
+    "codexThreadClosing": {
+      "title": "Codex 대화를 닫는 중입니다",
+      "intro": "Codex가 이 대화를 닫는 작업을 완료하지 않아 아직 복원할 수 없습니다.",
+      "reason": "플러그인은 이 명시적인 종료 상태에 대해서만 작업 시작 전에 잠시 재시도합니다. 계속 실패하면 원래 오류를 표시합니다.",
+      "solutions": {
+        "waitForClose": {
+          "title": "이전 대화가 닫힐 때까지 대기",
+          "step0": "이전 Codex 클라이언트 또는 채팅 창에서 대화를 해제한 후 다시 시도하세요.",
+          "step1": "반복되면 이전 클라이언트가 대화를 해제한 후 기록 목록에서 대화를 다시 여세요."
+        }
+      }
+    },
+    "codexThreadHistoryMissing": {
+      "title": "Codex 기록을 찾을 수 없습니다",
+      "intro": "현재 Codex 실행 환경에서 이 대화의 원본 기록을 찾을 수 없습니다.",
+      "reason": "기록 디렉터리가 달라졌거나 첫 초기화가 완료되지 않아 발생할 수도 있습니다. 기록이 삭제되었다고 단정할 수 없습니다.",
+      "solutions": {
+        "checkStorage": {
+          "title": "원래 기록 위치 확인",
+          "step0": "Codex가 원래 CODEX_HOME과 같은 호스트 환경을 사용하는지 확인하세요. 로컬 환경과 WSL의 차이에 특히 주의하세요.",
+          "step1": "원래 기록 디렉터리 또는 백업을 복원한 후 기록 목록에서 대화를 다시 여세요."
+        },
+        "startNewIfMissing": {
+          "title": "기록을 복구할 수 없을 때만 새로 시작",
+          "step0": "원래 기록을 복구할 수 없다고 확인한 경우에만 새 대화를 만들고 필요한 맥락을 다시 제공하세요. 여기에 표시된 메시지만으로 Codex의 원본 맥락이 자동 복원되지는 않습니다."
+        }
+      }
+    },
+    "codexThreadArchived": {
+      "title": "Codex 대화가 보관되어 있습니다",
+      "intro": "Codex에서 이 대화가 보관 상태이므로 바로 재개할 수 없다고 보고했습니다.",
+      "reason": "보관 상태는 스레드 만료를 뜻하지 않습니다. 복원을 위해 새 대화를 만들 필요는 없습니다.",
+      "solutions": {
+        "unarchive": {
+          "title": "원래 대화의 보관 해제",
+          "step0": "원래 Codex 클라이언트에서 보관을 해제하거나 원래 오류에 표시된 보관 해제 명령을 따르세요.",
+          "step1": "플러그인의 기록 목록을 새로 고치고 이 대화를 다시 연 후 보내세요."
+        }
+      }
+    },
+    "codexThreadResumeConfiguration": {
+      "title": "Codex 설정으로 인해 복원할 수 없습니다",
+      "intro": "Codex가 설정을 불러오지 못했거나 필수 MCP 서버 초기화에 실패했습니다.",
+      "reason": "새 대화로 같은 설정 문제가 해결되지는 않습니다. 플러그인은 필수 서비스를 자동으로 비활성화하지 않습니다.",
+      "solutions": {
+        "repairConfiguration": {
+          "title": "Codex가 보고한 설정 문제 수정",
+          "step0": "원래 오류에서 실패한 설정 항목 또는 필수 MCP 서버를 확인하세요.",
+          "step1": "Codex, 제공업체 또는 MCP 설정에서 해당 설정, 인증 정보, 연결을 수정한 후 대화를 다시 열고 재시도하세요."
+        }
+      }
     },
     "codexThreadResume": {
-      "title": "세션 스레드가 더 이상 유효하지 않습니다",
-      "intro": "새 세션을 만들면 이 문제가 해결됩니다. 현재 세션의 스레드 ID가 Codex 서버에 더 이상 존재하지 않습니다.",
-      "reason": "Codex는 일정 시간이 지나면 오래된 스레드를 삭제하며, 이전 세션을 재개하려 할 때 이 오류가 발생할 수 있습니다."
+      "title": "Codex 대화를 복원할 수 없습니다",
+      "intro": "Codex가 이 대화 복원에 실패했습니다. 구체적인 원인은 아직 확인되지 않았습니다.",
+      "reason": "복원 실패만으로 대화 만료를 단정할 수 없습니다. 플러그인은 원래 대화를 유지하며 빈 대화로 자동 교체하지 않습니다.",
+      "solutions": {
+        "inspectCause": {
+          "title": "재시도 전 원래 오류 확인",
+          "step0": "원래 오류와 이 대화에서 사용한 제공업체, Codex 실행 환경, 기록 디렉터리를 확인하세요.",
+          "step1": "응답이나 도구 실행이 이미 표시된 경우 중복 작업을 피하도록 결과를 확인한 후 다시 보내세요."
+        },
+        "checkCli": {
+          "title": "Codex CLI 호환성 확인",
+          "step0": "터미널 버전을 플러그인의 CLI 페이지와 비교하세요. 사용자 지정 경로라면 해당 실행 파일에 --version을 지정하세요.",
+          "step1": "원래 오류가 지원되지 않는 CLI 또는 프로토콜 버전을 나타내면 공식 안내에 따라 Codex를 업데이트하고 CLI 감지를 새로 고치세요."
+        }
+      }
     },
     "sdkNativeBinaryMissing": {
       "title": "SDK 설치 불완전 — 네이티브 바이너리 누락",
@@ -2149,6 +2621,25 @@
         }
       }
     },
+    "claudeCodeWindowsTooOld": {
+      "title": "이 Windows 버전에서는 Claude Code를 시작할 수 없습니다",
+      "intro": "필요한 시스템 함수를 찾지 못해 Windows가 Claude Code 시작을 막았습니다(오류 0xC0000139). 보통 Windows가 너무 오래되었다는 뜻입니다. Claude Code 2.1.118 이상은 ClosePseudoConsole을 사용하며, 이 함수에는 Windows 10 버전 1809 또는 Windows Server 2019가 필요합니다.",
+      "reason": "Windows는 프로그램을 불러오는 단계, 즉 Claude Code가 실행되기 전에 거부하므로 모델, 제공자, 권한 설정을 바꿔도 해결되지 않습니다.",
+      "solutions": {
+        "updateWindows": {
+          "title": "방법 1: Windows 업데이트",
+          "step0": "Windows 10 버전 1809 이상 또는 Windows Server 2019 이상으로 업데이트하세요. 이 버전들에는 누락된 함수가 포함되어 있습니다."
+        },
+        "useOlderSdk": {
+          "title": "방법 2: 이전 SDK로 전환",
+          "step0": "'종속성 관리'에서 SDK 버전을 v0.2.112 또는 그 이전으로 전환하세요. 최신 모델은 이 버전을 허용하지 않을 수 있습니다. 모델이 더 새로운 Claude Code를 요구하면 다른 모델을 선택하거나 Windows를 업데이트하세요. SDK를 업데이트하면 이 오류가 다시 나타납니다."
+        },
+        "checkCustomCli": {
+          "title": "방법 3: 직접 지정한 Claude CLI 확인",
+          "step0": "'Claude CLI 경로 (재정의)'를 설정했다면 플러그인은 SDK 대신 그 바이너리를 실행하므로 SDK를 전환해도 효과가 없습니다. 경로를 지우거나 이전 Claude Code를 가리키도록 바꾸세요. Windows가 이미 최신이라면 이 항목을 먼저 확인하세요."
+        }
+      }
+    },
     "spawnEbusy": {
       "title": "spawn EBUSY — 자식 프로세스 시작 실패",
       "intro": "이 오류는 일반적으로 Node.js 버전 비호환성 또는 불완전한 SDK 설치로 인해 발생합니다. 아래 두 가지 방법을 순서대로 시도해 보세요:",
@@ -2162,6 +2653,38 @@
           "title": "방법 2: npm 공식 레지스트리에서 최신 SDK 재설치",
           "step0": "1. npm 공식 레지스트리로 전환 (Taobao 미러는 최신 버전이 없을 수 있으므로 사용하지 마세요):",
           "step1": "2. '종속성 관리'를 열고 최신 SDK를 재설치:"
+        }
+      }
+    },
+    "codexCliVersionTooOld": {
+      "title": "Codex CLI 버전이 낮아 이 권한 모드를 사용할 수 없습니다",
+      "intro": "완전 자동과 자동 승인 모드는 자동 검토 설정을 사용합니다. 현재 Codex CLI는 이 설정을 인식하지 못해 요청을 거부했으므로 메시지가 처리되지 않았습니다.",
+      "reason": "플러그인은 컴퓨터에서 찾은 Codex CLI를 실행하므로 플러그인을 업데이트해도 CLI는 업데이트되지 않습니다. 업데이트 후에도 오류가 계속되면 더 오래된 codex가 PATH 앞쪽에 있을 수 있습니다.",
+      "solutions": {
+        "updateCodexCli": {
+          "title": "방법 1: 공식 안내에 따라 CLI 설치 또는 업데이트",
+          "step0": "1. 공식 안내를 열고 실행 환경에 맞게 독립 설치 관리자, npm 또는 Homebrew를 선택하세요. 업데이트는 원래 설치 경로로 진행하고, 독립 설치 버전에 npm uninstall을 실행하지 마세요:",
+          "step1": "2. 새 터미널에서 버전이 변경되었는지 확인한 다음, IDE를 다시 시작하여 플러그인이 새 CLI를 사용하도록 합니다:"
+        },
+        "useDefaultMode": {
+          "title": "방법 2: 권한 모드를 임시로 전환",
+          "step0": "기본 모드로 전환하세요. 이 모드는 자동 검토를 사용하지 않으므로 CLI를 업데이트할 때까지 계속 작업할 수 있습니다. 그래도 오류가 계속되면 방법 1에 따라 CLI를 업데이트하세요."
+        }
+      }
+    },
+    "codexCliAppServerTooOld": {
+      "title": "Codex CLI 버전이 낮아 시작할 수 없습니다",
+      "intro": "로컬 Codex CLI는 버전을 정상적으로 출력하지만, 너무 오래된 버전이라 플러그인이 codex app-server를 시작할 때 전달하는 --listen 옵션을 인식하지 못해 바로 종료됩니다.",
+      "reason": "플러그인은 컴퓨터에서 찾은 Codex CLI를 실행하므로 플러그인을 업데이트해도 CLI는 업데이트되지 않습니다. 업데이트 후에도 오류가 계속되면 더 오래된 codex가 PATH 앞쪽에 있을 수 있습니다.",
+      "solutions": {
+        "updateCodexCli": {
+          "title": "방법 1: 공식 안내에 따라 CLI 설치 또는 업데이트",
+          "step0": "1. 공식 안내를 열고 실행 환경에 맞게 독립 설치 관리자, npm 또는 Homebrew를 선택하세요. 업데이트는 원래 설치 경로로 진행하고, 독립 설치 버전에 npm uninstall을 실행하지 마세요:",
+          "step1": "2. 새 터미널에서 버전이 변경되었는지 확인한 다음, IDE를 다시 시작하여 플러그인이 새 CLI를 사용하도록 합니다:"
+        },
+        "pointCodexBin": {
+          "title": "방법 2: 동작하는 바이너리를 플러그인에 지정",
+          "step0": "PATH에 있는 모든 codex를 확인하세요(Windows: where codex). 동작하는 것이 첫 번째가 아니면 CODEX_BIN 환경 변수를 전체 경로로 설정하고 IDE를 다시 시작하세요. 플러그인은 뒤의 설치로도 자동 폴백합니다."
         }
       }
     },
@@ -2190,5 +2713,11 @@
       "executing": "Executing…",
       "adjust": "Continue adjusting"
     }
+  },
+  "sessionSupplier": {
+    "label": "공급자",
+    "choose": "공급자를 선택하세요",
+    "nextTurn": "다음 턴부터 적용",
+    "unavailable": "공급자를 사용할 수 없습니다. 메뉴를 다시 열어 재시도하거나 다른 공급자를 선택하세요."
   }
 }

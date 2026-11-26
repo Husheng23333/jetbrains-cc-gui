@@ -7,6 +7,7 @@ import type {
 import { DEFAULT_CLAUDE_MODEL_ID } from './types.js';
 import { ChatInputBoxHeader } from './ChatInputBoxHeader.js';
 import { ChatInputBoxFooter } from './ChatInputBoxFooter.js';
+import { ArtifactReviewDrafts } from './ArtifactReviewDrafts';
 import { ResizeHandles } from './ResizeHandles.js';
 import { InputEditableArea } from './InputEditableArea.js';
 import { useChatInputController } from './hooks/useChatInputController.js';
@@ -50,10 +51,14 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       onProviderSelect,
       reasoningEffort = 'high',
       onReasoningChange,
+      claudeUltracode = false,
+      onClaudeUltracodeChange,
       codexFastMode = 'normal',
       onCodexFastModeChange,
       dshPreset,
       onDshPresetChange,
+      ompApprovalMode,
+      onOmpApprovalModeChange,
       activeFile,
       selectedLines,
       onClearContext,
@@ -80,6 +85,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
       addToast,
       messageQueue,
       onRemoveFromQueue,
+      onEditFromQueue,
       onReorderQueue,
       autoOpenFileEnabled,
       onAutoOpenFileEnabledChange,
@@ -91,6 +97,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
     const { t } = useTranslation();
 
     const {
+      artifactReviews,
       attachments,
       handleAddAttachment,
       handleRemoveAttachment,
@@ -137,6 +144,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
     } = useChatInputController({
       selectedModel,
       currentProvider,
+      reasoningEffort,
       attachments: externalAttachments,
       value,
       onSubmit,
@@ -187,6 +195,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
           sdkStatusError={sdkStatusError}
           sdkInstalled={sdkInstalled}
           currentProvider={currentProvider}
+          selectedModel={selectedModel}
           onRetrySdkStatus={onRetrySdkStatus}
           onInstallSdk={onInstallSdk}
           t={t}
@@ -208,6 +217,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
           onToggleStatusPanel={onToggleStatusPanel}
           messageQueue={messageQueue}
           onRemoveFromQueue={onRemoveFromQueue}
+          onEditFromQueue={onEditFromQueue}
           onReorderQueue={onReorderQueue}
           showOpenSourceBanner={showOpenSourceBanner}
           onDismissOpenSourceBanner={handleDismissOpenSourceBanner}
@@ -216,6 +226,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
         />
 
         {/* Input area */}
+        <ArtifactReviewDrafts batches={artifactReviews.batches} remove={artifactReviews.remove} />
         <InputEditableArea
           editableWrapperRef={editableWrapperRef}
           editableWrapperStyle={editableWrapperStyle}
@@ -238,7 +249,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
 
         <ChatInputBoxFooter
           disabled={disabled}
-          hasInputContent={!isPreparingImages && (hasContent || attachments.length > 0)}
+          hasInputContent={!isPreparingImages && (hasContent || attachments.length > 0 || artifactReviews.hasReviews)}
           isLoading={isLoading}
           isEnhancing={isEnhancing}
           selectedModel={selectedModel}
@@ -246,8 +257,11 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
           currentProvider={currentProvider}
           codexNativeAutoReviewAvailable={codexNativeAutoReviewAvailable}
           reasoningEffort={reasoningEffort}
+          claudeUltracode={claudeUltracode}
+          onClaudeUltracodeChange={onClaudeUltracodeChange}
           codexFastMode={codexFastMode}
           dshPreset={dshPreset}
+          ompApprovalMode={ompApprovalMode}
           onSubmit={handleSubmit}
           onStop={onStop}
           onModeSelect={handleModeSelect}
@@ -256,6 +270,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
           onReasoningChange={onReasoningChange}
           onCodexFastModeChange={onCodexFastModeChange}
           onDshPresetChange={onDshPresetChange}
+          onOmpApprovalModeChange={onOmpApprovalModeChange}
           onEnhancePrompt={handleEnhancePrompt}
           alwaysThinkingEnabled={alwaysThinkingEnabled}
           onToggleThinking={onToggleThinking}
@@ -269,6 +284,7 @@ export const ChatInputBox = memo(forwardRef<ChatInputBoxHandle, ChatInputBoxProp
           onOpenCliSettings={onOpenCliSettings}
           longContextEnabled={longContextEnabled}
           onLongContextChange={onLongContextChange}
+          addToast={addToast}
           fileCompletion={fileCompletion}
           commandCompletion={commandCompletion}
           agentCompletion={agentCompletion}

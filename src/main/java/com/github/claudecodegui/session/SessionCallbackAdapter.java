@@ -32,6 +32,12 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
      */
     public interface JsTarget {
         void callJavaScript(String functionName, String... args);
+
+        /** Backend activity remains observable when a remote renderer is hidden or disconnected. */
+        default void onAssistantActivity() { }
+
+        /** The bound turn ended with an error; the tab strip paints it red. */
+        default void onTurnFailed() { }
     }
 
     private final StreamMessageCoalescer streamCoalescer;
@@ -51,6 +57,10 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
     private final AtomicReference<String> lastSessionId = new AtomicReference<>();
     /** Latest state callback, retained so stream end can capture the post-boundary raw tree. */
     private volatile List<ClaudeSession.Message> latestMessages;
+    private volatile boolean assistantActivityObserved;
+    private volatile boolean requestActive;
+    /** Last error already forwarded to the tab strip, so a repeated report does not repaint. */
+    private volatile String lastStateError;
 
     public SessionCallbackAdapter(
             StreamMessageCoalescer streamCoalescer,
@@ -68,6 +78,7 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
                 DELTA_THROTTLE_MS,
                 delta -> {
                     if (!isInactive()) {
+                        notifyAssistantActivity();
                         jsTarget.callJavaScript("onContentDelta", JsUtils.escapeJs(delta));
                     }
                 }
@@ -106,6 +117,11 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
             }
             latestMessages = messages;
             streamCoalescer.enqueue(messages);
+            // Restoring disk history must not create unread messages in background tabs.
+            if ((requestActive || streamCoalescer.isStreamActive()) && messages != null && !messages.isEmpty()
+                    && messages.get(messages.size() - 1).type == ClaudeSession.Message.Type.ASSISTANT) {
+                notifyAssistantActivity();
+            }
         }
     }
 
@@ -114,12 +130,20 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
         if (isInactive()) {
             return;
         }
+        boolean wasActive = requestActive;
+        requestActive = busy;
+        if (busy && !wasActive) {
+            assistantActivityObserved = false;
+        } else if (wasActive && !busy && !loading && assistantActivityObserved) {
+            notifyAssistantActivity();
+        }
         if (busy && loading && this.streamEndStarted.get() && !this.streamCoalescer.isStreamActive()) {
             // A new submission can fail before the provider emits its first stream-start.
             this.streamEndFallbackAlarm.cancelAllRequests();
             this.streamEndStarted.set(false);
             this.streamEndSignalSent.set(false);
             this.streamGeneration.incrementAndGet();
+            this.assistantActivityObserved = false;
         }
         // The webview queue owns JS-thread marshalling; only the VFS refresh needs the EDT.
         if (!loading && streamCoalescer.isStreamActive()) {
@@ -130,6 +154,13 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
         // Show error in status bar only (not as toast) to avoid duplicate notifications.
         if (error != null && !error.isEmpty()) {
             jsTarget.callJavaScript("updateStatus", JsUtils.escapeJs("Error: " + error));
+            // A provider may report the same failure again on completion; the dot only needs it once.
+            if (!error.equals(lastStateError)) {
+                lastStateError = error;
+                safeRun("tab failure notification", jsTarget::onTurnFailed);
+            }
+        } else {
+            lastStateError = null;
         }
         if (!busy && !loading) {
             ApplicationManager.getApplication().invokeLater(() -> {
@@ -151,17 +182,26 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
     /** Publishes a session identity or an empty ID after transcript expiry. */
     @Override
     public void onSessionIdReceived(String sessionId) {
+        onSessionIdReceived(sessionId, null);
+    }
+
+    @Override
+    public void onSessionIdReceived(String sessionId, String transitionToken) {
         if (this.isInactive() || sessionId == null) {
             return;
         }
         sessionId = sessionId.trim();
         // Atomic check-and-record: concurrent emissions of the same id are
         // forwarded exactly once.
-        if (sessionId.equals(lastSessionId.getAndSet(sessionId))) {
+        if (sessionId.equals(lastSessionId.getAndSet(sessionId)) && transitionToken == null) {
             return;
         }
         LOG.info("Session ID: " + sessionId);
-        jsTarget.callJavaScript("setSessionId", JsUtils.escapeJs(sessionId));
+        if (transitionToken == null) {
+            jsTarget.callJavaScript("setSessionId", JsUtils.escapeJs(sessionId));
+        } else {
+            jsTarget.callJavaScript("setSessionId", JsUtils.escapeJs(sessionId), JsUtils.escapeJs(transitionToken));
+        }
     }
 
     @Override
@@ -227,6 +267,7 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
         streamEndSignalSent.set(false);
         streamGeneration.incrementAndGet();
         latestMessages = null;
+        assistantActivityObserved = false;
         contentDeltaThrottler.reset();
         thinkingDeltaThrottler.reset();
         // The queue preserves this lifecycle edge ahead of all following deltas.
@@ -296,6 +337,9 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
             LOG.debug("Skipping stale stream-end signal (sequence=" + sequence + ")");
             return;
         }
+        if (assistantActivityObserved) {
+            notifyAssistantActivity();
+        }
         safeRun("callJavaScript(onStreamEnd)", () ->
                 jsTarget.callJavaScript("onStreamEnd", String.valueOf(sequence)));
         safeRun("callJavaScript(showLoading, false)", () ->
@@ -316,6 +360,12 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
         } catch (Exception e) {
             LOG.warn(label + " failed: " + e.getMessage(), e);
         }
+    }
+
+    /** Observe both text deltas and native message snapshots without adding a browser round trip. */
+    private void notifyAssistantActivity() {
+        assistantActivityObserved = true;
+        safeRun("assistant activity notification", jsTarget::onAssistantActivity);
     }
 
     @Override
@@ -399,6 +449,14 @@ public class SessionCallbackAdapter implements ClaudeSession.SessionCallback {
             return;
         }
         jsTarget.callJavaScript("onTaskEvent", JsUtils.escapeJs(eventJson));
+    }
+
+    @Override
+    public void onInterTurnMessage(String messageJson) {
+        if (isInactive() || messageJson == null || messageJson.trim().isEmpty()) {
+            return;
+        }
+        jsTarget.callJavaScript("onInterTurnMessage", JsUtils.escapeJs(messageJson));
     }
 
     @Override

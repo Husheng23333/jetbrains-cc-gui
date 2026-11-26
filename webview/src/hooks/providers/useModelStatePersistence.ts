@@ -4,6 +4,7 @@ import {
   CLAUDE_MODELS,
   CODEX_MODELS,
   DEFAULT_CLAUDE_MODEL_ID,
+  GEMINI_DEFAULT_MODEL_ID,
   GROK_DEFAULT_MODEL_ID,
   KIMI_DEFAULT_MODEL_ID,
   OMP_DEFAULT_MODEL_ID,
@@ -30,7 +31,7 @@ import {
 } from '../modelProviderStateHelpers';
 
 const STORAGE_KEY = 'model-selection-state';
-const REASONING_VALUES = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+const REASONING_VALUES = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 const CODEX_FAST_MODE_VALUES = ['normal', 'fast'] as const;
 
 const getCustomModels = (key: string): { id: string }[] => {
@@ -63,6 +64,11 @@ const normalizeRestoredPermissionMode = (value: unknown): PermissionMode | null 
   return typeof candidate === 'string' && isValidPermissionMode(candidate) ? candidate : null;
 };
 
+/** Claude's native postures — the claude slot's restore whitelist. */
+const CLAUDE_PERMISSION_MODE_IDS: ReadonlySet<string> = new Set([
+  'default', 'plan', 'acceptEdits', 'auto', 'bypassPermissions',
+]);
+
 export interface UseModelStatePersistenceOptions {
   // Cross-slice load setters (run once on mount)
   setCurrentProvider: (value: string) => void;
@@ -78,6 +84,7 @@ export interface UseModelStatePersistenceOptions {
   setSelectedPiModel: (value: string) => void;
   setSelectedOmpModel: (value: string) => void;
   setSelectedDshModel: (value: string) => void;
+  setSelectedGeminiModel: (value: string) => void;
   setGrokPermissionMode: (value: PermissionMode) => void;
   setKimiPermissionMode: (value: PermissionMode) => void;
   setMiniMaxPermissionMode: (value: PermissionMode) => void;
@@ -86,9 +93,11 @@ export interface UseModelStatePersistenceOptions {
   setPiPermissionMode: (value: PermissionMode) => void;
   setOmpPermissionMode: (value: PermissionMode) => void;
   setDshPermissionMode: (value: PermissionMode) => void;
+  setGeminiPermissionMode: (value: PermissionMode) => void;
   setPermissionMode: (value: PermissionMode) => void;
   setLongContextEnabled: (value: boolean) => void;
   setReasoningEffort: (value: ReasoningEffort) => void;
+  setClaudeUltracode?: (value: boolean) => void;
   setCodexFastMode: (value: CodexFastMode) => void;
   setDshPreset: (value: string) => void;
   setCodexCollaborationMode?: (value: CodexCollaborationMode) => void;
@@ -109,6 +118,7 @@ export interface UseModelStatePersistenceOptions {
   selectedPiModel: string;
   selectedOmpModel: string;
   selectedDshModel: string;
+  selectedGeminiModel: string;
   grokPermissionMode: PermissionMode;
   kimiPermissionMode: PermissionMode;
   miniMaxPermissionMode: PermissionMode;
@@ -117,8 +127,10 @@ export interface UseModelStatePersistenceOptions {
   piPermissionMode: PermissionMode;
   ompPermissionMode: PermissionMode;
   dshPermissionMode: PermissionMode;
+  geminiPermissionMode: PermissionMode;
   longContextEnabled: boolean;
   reasoningEffort: ReasoningEffort;
+  claudeUltracode?: boolean;
   codexFastMode: CodexFastMode;
   dshPreset: string;
   codexCollaborationMode?: CodexCollaborationMode;
@@ -152,6 +164,7 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
     setSelectedPiModel,
     setSelectedOmpModel,
     setSelectedDshModel,
+    setSelectedGeminiModel,
     setGrokPermissionMode,
     setKimiPermissionMode,
     setMiniMaxPermissionMode,
@@ -160,9 +173,11 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
     setPiPermissionMode,
     setOmpPermissionMode,
     setDshPermissionMode,
+    setGeminiPermissionMode,
     setPermissionMode,
     setLongContextEnabled,
     setReasoningEffort,
+    setClaudeUltracode,
     setCodexFastMode,
     setDshPreset,
     setCodexCollaborationMode,
@@ -182,6 +197,7 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
     selectedPiModel,
     selectedOmpModel,
     selectedDshModel,
+    selectedGeminiModel,
     grokPermissionMode,
     kimiPermissionMode,
     miniMaxPermissionMode,
@@ -190,8 +206,10 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
     piPermissionMode,
     ompPermissionMode,
     dshPermissionMode,
+    geminiPermissionMode,
     longContextEnabled,
     reasoningEffort,
+    claudeUltracode = false,
     codexFastMode,
     dshPreset,
     codexCollaborationMode = 'default',
@@ -240,6 +258,7 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
       let restoredPiModel = PI_DEFAULT_MODEL_ID;
       let restoredOmpModel = OMP_DEFAULT_MODEL_ID;
       let restoredDshModel = DSH_DEFAULT_MODEL_ID;
+      let restoredGeminiModel = GEMINI_DEFAULT_MODEL_ID;
       let restoredGrokPermissionMode: PermissionMode = 'default';
       let restoredKimiPermissionMode: PermissionMode = 'default';
       let restoredMiniMaxPermissionMode: PermissionMode = 'default';
@@ -248,6 +267,7 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
       let restoredPiPermissionMode: PermissionMode = 'default';
       let restoredOmpPermissionMode: PermissionMode = 'default';
       let restoredDshPermissionMode: PermissionMode = 'default';
+      let restoredGeminiPermissionMode: PermissionMode = 'default';
       let restoredLongContextEnabled = true;
       let restoredCodexFastMode: CodexFastMode = 'normal';
       let restoredDshPreset = DSH_PRESET_NONE;
@@ -320,6 +340,10 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
         restoredDshModel = id;
         setSelectedDshModel(id);
       });
+      const applyGeminiModel = makeCliModelApplier((id) => {
+        restoredGeminiModel = id;
+        setSelectedGeminiModel(id);
+      });
 
       if (saved) {
         const state = JSON.parse(saved);
@@ -340,7 +364,11 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
 
         const restoredClaudeMode = normalizeRestoredPermissionMode(state.claudePermissionMode);
         if (restoredClaudeMode) {
-          restoredClaudePermissionMode = restoredClaudeMode;
+          // Claude's own postures — a stale/corrupted snapshot carrying a
+          // provider-specific id (smol/slow/sandbox) must not ride claude turns.
+          restoredClaudePermissionMode = CLAUDE_PERMISSION_MODE_IDS.has(restoredClaudeMode)
+            ? restoredClaudeMode
+            : 'default';
         }
         const restoredCodexMode = normalizeRestoredPermissionMode(state.codexPermissionMode);
         if (restoredCodexMode) {
@@ -380,6 +408,9 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
         if (restoredDshMode) {
           restoredDshPermissionMode = normalizeCliPermissionMode(restoredDshMode, 'dsh');
         }
+        if (isValidPermissionMode(state.geminiPermissionMode)) {
+          restoredGeminiPermissionMode = normalizeCliPermissionMode(state.geminiPermissionMode, 'gemini');
+        }
 
         if (typeof state.longContextEnabled === 'boolean') {
           restoredLongContextEnabled = state.longContextEnabled;
@@ -388,6 +419,9 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
 
         if (isReasoningEffort(state.reasoningEffort)) {
           setReasoningEffort(state.reasoningEffort);
+        }
+        if (typeof state.claudeUltracode === 'boolean') {
+          setClaudeUltracode?.(state.claudeUltracode);
         }
         if (isCodexFastMode(state.codexFastMode)) {
           restoredCodexFastMode = state.codexFastMode;
@@ -446,6 +480,11 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
           ? initialTabModel
           : state.dshModel;
         applyDshModel(dshModelCandidate);
+
+        const geminiModelCandidate = hasBackendModel && restoredProvider === 'gemini'
+          ? initialTabModel
+          : state.geminiModel;
+        applyGeminiModel(geminiModelCandidate);
       } else if (hasBackendProvider) {
         // No localStorage yet (fresh user) but backend supplied a provider:
         // honor it so the tab starts with the right provider.
@@ -462,11 +501,21 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
           else if (initialTabProvider === 'pi') applyPiModel(initialTabModel);
           else if (initialTabProvider === 'omp') applyOmpModel(initialTabModel);
           else if (initialTabProvider === 'dsh') applyDshModel(initialTabModel);
+          else if (initialTabProvider === 'gemini') applyGeminiModel(initialTabModel);
         }
         setCodexCollaborationMode?.(restoredCodexSettings.collaborationMode);
         setCodexApprovalPreset?.(restoredCodexSettings.approvalPreset);
         setCodexSandboxSelection?.(restoredCodexSettings.sandboxSelection);
         setCodexSandboxSource?.(restoredCodexSettings.sandboxSource);
+      }
+
+      // An explicit tab effort overrides shared preferences. A new Java tab has
+      // null effort and inherits the last-used preference (or the hook default).
+      if (isReasoningEffort(window.__INITIAL_TAB_REASONING_EFFORT__)) {
+        setReasoningEffort(window.__INITIAL_TAB_REASONING_EFFORT__);
+      }
+      if (typeof window.__INITIAL_TAB_CLAUDE_ULTRACODE__ === 'boolean') {
+        setClaudeUltracode?.(window.__INITIAL_TAB_CLAUDE_ULTRACODE__);
       }
 
       // Reconcile omp mode⇔model pairs saved by builds before the two were
@@ -500,7 +549,9 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
                   ? restoredOmpPermissionMode
                   : restoredProvider === 'dsh'
                     ? restoredDshPermissionMode
-                    : restoredClaudePermissionMode;
+                    : restoredProvider === 'gemini'
+                      ? restoredGeminiPermissionMode
+                      : restoredClaudePermissionMode;
       setClaudePermissionMode(restoredClaudePermissionMode);
       setCodexPermissionMode(restoredCodexPermissionMode);
       setGrokPermissionMode(restoredGrokPermissionMode);
@@ -511,6 +562,7 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
       setPiPermissionMode(restoredPiPermissionMode);
       setOmpPermissionMode(restoredOmpPermissionMode);
       setDshPermissionMode(restoredDshPermissionMode);
+      setGeminiPermissionMode(restoredGeminiPermissionMode);
       setPermissionMode(initialPermissionMode);
 
       let syncRetryCount = 0;
@@ -549,7 +601,9 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
                       ? restoredOmpModel
                       : restoredProvider === 'dsh'
                         ? restoredDshModel
-                        : apply1MContextSuffix(restoredClaudeModel, restoredLongContextEnabled);
+                        : restoredProvider === 'gemini'
+                          ? restoredGeminiModel
+                          : apply1MContextSuffix(restoredClaudeModel, restoredLongContextEnabled);
           sendBridgeEvent('set_model', modelToSync);
           // Do NOT push the permission mode to Java on boot. Java is the source
           // of truth for the mode (persisted app-level in PropertiesComponent,
@@ -627,6 +681,7 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
           piModel: selectedPiModel,
           ompModel: selectedOmpModel,
           dshModel: selectedDshModel,
+          geminiModel: selectedGeminiModel,
           grokPermissionMode,
           kimiPermissionMode,
           miniMaxPermissionMode,
@@ -635,8 +690,10 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
           piPermissionMode,
           ompPermissionMode,
           dshPermissionMode,
+          geminiPermissionMode,
           longContextEnabled,
           reasoningEffort,
+          claudeUltracode,
           codexFastMode,
           dshPreset,
           codexCollaborationMode,
@@ -677,13 +734,16 @@ export function useModelStatePersistence(options: UseModelStatePersistenceOption
     piPermissionMode,
     ompPermissionMode,
     dshPermissionMode,
+    geminiPermissionMode,
     longContextEnabled,
     reasoningEffort,
+    claudeUltracode,
     codexFastMode,
     dshPreset,
     codexCollaborationMode,
     codexApprovalPreset,
     codexSandboxSelection,
     codexSandboxSource,
+    selectedGeminiModel,
   ]);
 }

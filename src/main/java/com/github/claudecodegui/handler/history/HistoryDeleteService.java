@@ -1,13 +1,17 @@
 package com.github.claudecodegui.handler.history;
 
+import com.github.claudecodegui.util.ClaudeConfigDir;
 import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.handler.NodeJsServiceCaller;
 import com.github.claudecodegui.handler.core.HandlerContext;
+import com.github.claudecodegui.provider.codex.CodexSDKBridge;
+import com.github.claudecodegui.provider.claude.ClaudeHistoryReader;
 import com.github.claudecodegui.provider.dsh.DshHistoryReader;
 
 import com.github.claudecodegui.cache.SessionIndexCache;
 import com.github.claudecodegui.cache.SessionIndexManager;
 import com.github.claudecodegui.session.ClaudeSession;
+import com.github.claudecodegui.settings.SessionSupplierStateService;
 import com.github.claudecodegui.util.PathUtils;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -28,9 +32,9 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -54,109 +58,157 @@ class HistoryDeleteService {
     private final HandlerContext context;
     private final NodeJsServiceCaller nodeJsServiceCaller;
     private final HistoryLoadService historyLoadService;
+    private final SessionSupplierStateService sessionSuppliers;
 
     HistoryDeleteService(HandlerContext context, NodeJsServiceCaller nodeJsServiceCaller, HistoryLoadService historyLoadService) {
+        this(context, nodeJsServiceCaller, historyLoadService, SessionSupplierStateService.getInstance());
+    }
+
+    HistoryDeleteService(HandlerContext context, NodeJsServiceCaller nodeJsServiceCaller,
+                         HistoryLoadService historyLoadService, SessionSupplierStateService sessionSuppliers) {
         this.context = context;
         this.nodeJsServiceCaller = nodeJsServiceCaller;
         this.historyLoadService = historyLoadService;
+        this.sessionSuppliers = sessionSuppliers;
     }
 
     /**
-     * Delete session history files.
-     * Deletes the .jsonl file for the specified sessionId and related agent-xxx.jsonl files.
+     * Delete one session's history files, including related agent and subagent files.
+     *
+     * @param content {@code {sessionId, provider, requestId}}, or a bare session id
+     * @param currentProvider provider used when the payload does not name one
      */
-    void handleDeleteSession(String sessionId, String currentProvider) {
-        if (!isValidSessionId(sessionId)) {
-            LOG.warn("[HistoryHandler] Delete session rejected: invalid sessionId");
-            return;
-        }
-        quiesceActiveSessionForDeletion(
-                context.getSession(), Collections.singleton(sessionId), currentProvider)
-                .thenRunAsync(() -> {
-                    try {
-                        LOG.info("[HistoryHandler] ========== Delete session start ==========");
-                        LOG.info("[HistoryHandler] SessionId: " + sessionId + ", Provider: " + currentProvider);
-
-                        DeleteResult result = deleteSessionFiles(sessionId, currentProvider);
-
-                        LOG.info("[HistoryHandler] Delete completed - Main file: " + (result.mainDeleted ? "deleted" : "not found") + ", Agent files: " + result.agentFilesDeleted);
-
-                        if (result.mainDeleted) {
-                            cleanupSessionMetadata(List.of(sessionId));
-                        }
-                        cleanupCache(currentProvider);
-
-                        LOG.info("[HistoryHandler] Reloading history data...");
-                        historyLoadService.handleLoadHistoryData(currentProvider);
-
-                    } catch (Exception e) {
-                        LOG.error("[HistoryHandler] Delete session failed: " + e.getMessage(), e);
-                    }
-                }).exceptionally(ex -> {
-                    handleQuiesceFailure("deletion", currentProvider, ex);
-                    return null;
-                });
+    void handleDeleteSession(String content, String currentProvider) {
+        handleDeleteRequest(HistoryDeleteRequest.parse(content, currentProvider), "deletion");
     }
 
     /**
      * Batch delete session history files in one backend request.
+     *
+     * @param content {@code {sessionIds, provider, requestId}}, or a JSON array of ids
+     * @param currentProvider provider used when the payload does not name one
      */
     void handleDeleteSessions(String content, String currentProvider) {
-        List<String> sessionIds = parseSessionIds(content);
-        if (sessionIds.isEmpty()) {
-            LOG.warn("[HistoryHandler] Batch delete failed: empty sessionIds");
-            return;
-        }
-
-        quiesceActiveSessionForDeletion(context.getSession(), sessionIds, currentProvider)
-                .thenRunAsync(() -> {
-                    try {
-                        LOG.info("[HistoryHandler] ========== Batch delete sessions start ==========");
-                        LOG.info("[HistoryHandler] SessionIds: " + GSON.toJson(sessionIds) + ", Provider: " + currentProvider);
-
-                        int mainDeletedCount = 0;
-                        int agentFilesDeletedCount = 0;
-
-                        List<String> deletedSessionIds = new ArrayList<>();
-                        if ("codex".equals(currentProvider)) {
-                            CodexBatchDeleteResult result = deleteCodexSessions(sessionIds);
-                            mainDeletedCount = result.deletedSessionIds.size();
-                            deletedSessionIds.addAll(result.deletedSessionIds);
-                            LOG.info("[HistoryHandler] Deleted Codex rollout files: " + result.deletedFileCount);
-                        } else {
-                            for (String sessionId : sessionIds) {
-                                try {
-                                    DeleteResult result = deleteSessionFiles(sessionId, currentProvider);
-                                    if (result.mainDeleted) {
-                                        mainDeletedCount++;
-                                        deletedSessionIds.add(sessionId);
-                                    }
-                                    agentFilesDeletedCount += result.agentFilesDeleted;
-                                } catch (Exception e) {
-                                    LOG.error("[HistoryHandler] Batch delete single session failed: " + sessionId + " - " + e.getMessage(), e);
-                                }
-                            }
-                        }
-                        cleanupSessionMetadata(deletedSessionIds);
-
-                        cleanupCache(currentProvider);
-
-                        LOG.info("[HistoryHandler] Batch delete completed - Main files: " + mainDeletedCount + "/" + sessionIds.size()
-                                + ", Agent files: " + agentFilesDeletedCount);
-                        LOG.info("[HistoryHandler] Reloading history data...");
-                        historyLoadService.handleLoadHistoryData(currentProvider);
-                    } catch (Exception e) {
-                        LOG.error("[HistoryHandler] Batch delete sessions failed: " + e.getMessage(), e);
-                    }
-                }).exceptionally(ex -> {
-                    handleQuiesceFailure("batch deletion", currentProvider, ex);
-                    return null;
-                });
+        handleDeleteRequest(HistoryDeleteRequest.parse(content, currentProvider), "batch deletion");
     }
 
-    private void handleQuiesceFailure(String action, String currentProvider, Throwable error) {
-        LOG.warn("[HistoryHandler] Failed to stop active session before " + action
-                + ": " + error.getMessage(), error);
+    /** File deletion that runs only after its sessions were quiesced. */
+    @FunctionalInterface
+    interface DeletionTask {
+        /**
+         * @param releaseWriters releases the Codex writer leases once the rollout files are gone
+         * @return ids whose files could not all be removed
+         */
+        Collection<String> run(Runnable releaseWriters) throws Exception;
+    }
+
+    private void handleDeleteRequest(HistoryDeleteRequest request, String action) {
+        if (request.sessionIds().isEmpty()) {
+            LOG.warn("[HistoryHandler] History " + action + " rejected: no valid sessionIds");
+            restoreHistory(action, request.provider());
+            notifyDeleteResult(request, List.of(), HistoryDeletionGuard.DELETE_FAILED);
+            return;
+        }
+        runGuardedDeletion(request, action, releaseWriters -> deleteSessions(request, releaseWriters));
+    }
+
+    /**
+     * Quiesce the targets, hold Codex writer leases while deleting, then report the outcome.
+     * Every path reports once, so the webview never treats a refused session as deleted.
+     */
+    void runGuardedDeletion(HistoryDeleteRequest request, String action, DeletionTask task) {
+        List<String> sessionIds = request.sessionIds();
+        String provider = request.provider();
+        CodexSDKBridge bridge = context == null ? null : context.getCodexSDKBridge();
+        ClaudeSession session = context == null ? null : context.getSession();
+        CompletableFuture<Void> quiesced;
+        try {
+            quiesced = quiesceActiveSessionForDeletion(session, sessionIds, provider, bridge);
+        } catch (Exception e) {
+            quiesced = CompletableFuture.failedFuture(e);
+        }
+        quiesced.thenApplyAsync(ignored -> {
+            Runnable releaseWriters = HistoryDeletionGuard.reserve(sessionIds, provider, bridge);
+            try {
+                // A send that began after the idle release would otherwise lose its lease to that release.
+                HistoryDeletionGuard.assertStillIdle(session, sessionIds, provider);
+                return task.run(releaseWriters);
+            } catch (CompletionException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new CompletionException(e);
+            } finally {
+                releaseWriters.run();
+            }
+        }).whenComplete((failedIds, error) -> {
+            if (error != null) {
+                handleDeletionFailure(action, request, error);
+                return;
+            }
+            Collection<String> failed = failedIds == null ? Collections.emptySet() : failedIds;
+            List<String> deletedIds = sessionIds.stream().filter(id -> !failed.contains(id)).toList();
+            notifyDeleteResult(request, deletedIds, failed.isEmpty() ? null : HistoryDeletionGuard.DELETE_FAILED);
+        });
+    }
+
+    private Collection<String> deleteSessions(HistoryDeleteRequest request, Runnable releaseWriters) throws Exception {
+        List<String> sessionIds = request.sessionIds();
+        String currentProvider = request.provider();
+        LOG.info("[HistoryHandler] ========== Delete sessions start ==========");
+        LOG.info("[HistoryHandler] SessionIds: " + GSON.toJson(sessionIds) + ", Provider: " + currentProvider);
+
+        int agentFilesDeletedCount = 0;
+        List<String> deletedSessionIds = new ArrayList<>();
+        Collection<String> failedSessionIds = new LinkedHashSet<>();
+        if ("codex".equals(currentProvider)) {
+            CodexBatchDeleteResult result = deleteCodexSessions(sessionIds);
+            // The leases guard only the rollout files; the reload below must not report them as foreign writers.
+            releaseWriters.run();
+            deletedSessionIds.addAll(result.deletedSessionIds);
+            failedSessionIds.addAll(result.failedSessionIds);
+            LOG.info("[HistoryHandler] Deleted Codex rollout files: " + result.deletedFileCount);
+        } else {
+            for (String sessionId : sessionIds) {
+                try {
+                    DeleteResult result = deleteSessionFiles(sessionId, currentProvider);
+                    if (result.mainDeleted) {
+                        deletedSessionIds.add(sessionId);
+                    }
+                    agentFilesDeletedCount += result.agentFilesDeleted;
+                } catch (Exception e) {
+                    failedSessionIds.add(sessionId);
+                    LOG.warn("[HistoryHandler] Delete single session failed: " + sessionId + " - " + e.getMessage(), e);
+                }
+            }
+        }
+        cleanupSessionMetadata(currentProvider, deletedSessionIds);
+
+        cleanupCache(currentProvider);
+
+        LOG.info("[HistoryHandler] Delete completed - Main files: " + deletedSessionIds.size() + "/" + sessionIds.size()
+                + ", Agent files: " + agentFilesDeletedCount);
+        LOG.info("[HistoryHandler] Reloading history data...");
+        historyLoadService.handleLoadHistoryData(currentProvider);
+        return failedSessionIds;
+    }
+
+    private void handleDeletionFailure(String action, HistoryDeleteRequest request, Throwable error) {
+        String errorCode = HistoryDeletionGuard.errorCode(error);
+        try {
+            if (HistoryDeletionGuard.DELETE_FAILED.equals(errorCode)) {
+                LOG.warn("[HistoryHandler] History " + action + " failed: " + error.getMessage(), error);
+            } else {
+                LOG.info("[HistoryHandler] History " + action + " refused: " + errorCode);
+            }
+            restoreHistory(action, request.provider());
+        } finally {
+            // The webview must learn of every refusal, or it keeps treating the session as deleted.
+            notifyDeleteResult(request, List.of(), errorCode);
+        }
+    }
+
+    /** Reload the list so rows the webview removed optimistically come back. */
+    private void restoreHistory(String action, String currentProvider) {
         try {
             historyLoadService.handleLoadHistoryData(currentProvider);
         } catch (Exception reloadError) {
@@ -165,21 +217,28 @@ class HistoryDeleteService {
         }
     }
 
+    /** Report the outcome; Codex waits for it before leaving a deleted active session. */
+    void notifyDeleteResult(HistoryDeleteRequest request, Collection<String> deletedSessionIds, String errorCode) {
+        if (context != null) {
+            context.executeJavaScriptQueued(HistoryDeletionGuard.resultScript(request, deletedSessionIds, errorCode));
+        }
+    }
+
     static CompletableFuture<Void> quiesceActiveSessionForDeletion(
             ClaudeSession session,
             Collection<String> sessionIds,
             String currentProvider
     ) {
-        if (session == null || sessionIds == null || sessionIds.isEmpty()) {
-            return CompletableFuture.completedFuture(null);
-        }
-        String activeSessionId = session.getSessionId();
-        if (activeSessionId == null
-                || !sessionIds.contains(activeSessionId)
-                || !Objects.equals(session.getProvider(), currentProvider)) {
-            return CompletableFuture.completedFuture(null);
-        }
-        return session.interrupt();
+        return quiesceActiveSessionForDeletion(session, sessionIds, currentProvider, null);
+    }
+
+    static CompletableFuture<Void> quiesceActiveSessionForDeletion(
+            ClaudeSession session,
+            Collection<String> sessionIds,
+            String currentProvider,
+            CodexSDKBridge bridge
+    ) {
+        return HistoryDeletionGuard.quiesce(session, sessionIds, currentProvider, bridge);
     }
 
     static List<String> parseSessionIds(String content) {
@@ -229,9 +288,6 @@ class HistoryDeleteService {
             LOG.warn("[HistoryHandler] Delete session rejected: invalid sessionId");
             return new DeleteResult(false, 0);
         }
-        if ("codex".equals(currentProvider)) {
-            return new DeleteResult(deleteCodexSession(sessionId), 0);
-        }
         if ("grok".equals(currentProvider)) {
             return new DeleteResult(deleteGrokSession(sessionId), 0);
         }
@@ -250,6 +306,9 @@ class HistoryDeleteService {
         if ("minimax".equals(currentProvider)) {
             return new DeleteResult(deleteMiniMaxSession(sessionId), 0);
         }
+        if ("gemini".equals(currentProvider)) {
+            return new DeleteResult(deleteGeminiSession(sessionId), 0);
+        }
         if ("zcode".equals(currentProvider)) {
             return new DeleteResult(deleteZcodeSession(sessionId), 0);
         }
@@ -265,7 +324,10 @@ class HistoryDeleteService {
             return new DeleteResult(false, 0);
         }
 
-        int[] result = deleteClaudeSession(sessionId, projectPath);
+        var reader = new ClaudeHistoryReader();
+        String projectRoot = context.getProject() == null ? projectPath : context.getProject().getBasePath();
+        String historyCwd = reader.resolveRepositoryHistoryCwd(sessionId, projectPath, projectRoot, context.getSettingsService());
+        int[] result = deleteClaudeSession(sessionId, historyCwd);
         return new DeleteResult(result[0] == 1, result[1]);
     }
 
@@ -335,6 +397,17 @@ class HistoryDeleteService {
         return deleted;
     }
 
+    private boolean deleteGeminiSession(String sessionId) throws java.io.IOException {
+        String rawPath = context.resolveEffectiveWorkingDirectory();
+        String nodePath = NodeDetector.getInstance().getCachedNodePath();
+        String projectPath = NodeDetector.isWslPath(nodePath) ? NodeDetector.convertToWslPath(rawPath) : rawPath;
+        com.github.claudecodegui.provider.gemini.GeminiHistoryReader reader =
+                new com.github.claudecodegui.provider.gemini.GeminiHistoryReader();
+        boolean deleted = reader.deleteSession(sessionId, projectPath);
+        LOG.info("[HistoryHandler] Delete Gemini session " + sessionId + ": " + (deleted ? "ok" : "not found"));
+        return deleted;
+    }
+
     private boolean deleteZcodeSession(String sessionId) throws java.io.IOException {
         String rawPath = context.resolveEffectiveWorkingDirectory();
         String nodePath = NodeDetector.getInstance().getCachedNodePath();
@@ -357,17 +430,13 @@ class HistoryDeleteService {
         return archived;
     }
 
-    private boolean deleteCodexSession(String sessionId) throws java.io.IOException {
-        return deleteCodexSessions(Collections.singleton(sessionId)).deletedSessionIds.contains(sessionId);
-    }
-
     private CodexBatchDeleteResult deleteCodexSessions(Collection<String> sessionIds) throws java.io.IOException {
         String homeDir = NodeDetector.resolveHomeForFileOps();
         Path sessionDir = Paths.get(homeDir, ".codex", "sessions");
 
         if (!Files.exists(sessionDir)) {
             LOG.error("[HistoryHandler] Codex session directory not found: " + sessionDir);
-            return new CodexBatchDeleteResult(Collections.emptySet(), 0);
+            return new CodexBatchDeleteResult(Collections.emptySet(), Collections.emptySet(), 0);
         }
 
         Map<String, List<Path>> matchesBySession = findCodexSessionFiles(sessionDir, sessionIds);
@@ -393,12 +462,15 @@ class HistoryDeleteService {
                 LOG.error("[HistoryHandler] Failed to delete Codex session file: " + sessionFile + " - " + e.getMessage(), e);
             }
         }
+        LinkedHashSet<String> failedSessionIds = new LinkedHashSet<>();
         for (Map.Entry<String, List<Path>> entry : matchesBySession.entrySet()) {
             if (isCodexSessionDeletionComplete(entry.getValue(), failedPaths)) {
                 deletedSessionIds.add(entry.getKey());
+            } else if (!Collections.disjoint(entry.getValue(), failedPaths)) {
+                failedSessionIds.add(entry.getKey());
             }
         }
-        return new CodexBatchDeleteResult(deletedSessionIds, deletedFileCount);
+        return new CodexBatchDeleteResult(deletedSessionIds, failedSessionIds, deletedFileCount);
     }
 
     static boolean isCodexSessionDeletionComplete(
@@ -540,9 +612,7 @@ class HistoryDeleteService {
      * @return int[2]: [mainDeleted(0/1), agentFilesDeleted]
      */
     private int[] deleteClaudeSession(String sessionId, String projectPath) throws java.io.IOException {
-        String homeDir = NodeDetector.resolveHomeForFileOps();
-        Path claudeDir = Paths.get(homeDir, ".claude");
-        Path projectsDir = claudeDir.resolve("projects");
+        Path projectsDir = ClaudeConfigDir.current().resolve("projects");
         List<Path> sessionDirs = PathUtils.getSanitizedPathCandidates(projectPath).stream()
                 .map(projectsDir::resolve)
                 .filter(Files::isDirectory)
@@ -600,6 +670,15 @@ class HistoryDeleteService {
      * @param sessionIds the sessions whose files were deleted
      * @return true if both were cleaned up (or there was nothing to clean up)
      */
+    boolean cleanupSessionMetadata(String provider, List<String> sessionIds) {
+        if (sessionSuppliers != null) {
+            for (String sessionId : sessionIds) {
+                sessionSuppliers.removeSupplier(provider, sessionId);
+            }
+        }
+        return cleanupSessionMetadata(sessionIds);
+    }
+
     boolean cleanupSessionMetadata(List<String> sessionIds) {
         if (sessionIds.isEmpty()) {
             return true;
@@ -714,10 +793,17 @@ class HistoryDeleteService {
 
     private static class CodexBatchDeleteResult {
         private final Collection<String> deletedSessionIds;
+        /** Ids that matched rollout files of which at least one could not be deleted. */
+        private final Collection<String> failedSessionIds;
         private final int deletedFileCount;
 
-        private CodexBatchDeleteResult(Collection<String> deletedSessionIds, int deletedFileCount) {
+        private CodexBatchDeleteResult(
+                Collection<String> deletedSessionIds,
+                Collection<String> failedSessionIds,
+                int deletedFileCount
+        ) {
             this.deletedSessionIds = deletedSessionIds;
+            this.failedSessionIds = failedSessionIds;
             this.deletedFileCount = deletedFileCount;
         }
     }

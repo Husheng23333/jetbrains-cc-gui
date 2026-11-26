@@ -1,6 +1,8 @@
 import { type RefObject, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChatInputBox } from './ChatInputBox';
+import { useSessionSuppliers } from '../hooks/useSessionSuppliers';
+import { SessionSupplierContext } from '../contexts/SessionSupplierContext';
 import type {
   Attachment,
   ChatInputBoxHandle,
@@ -9,6 +11,7 @@ import { MessageAnchorRail } from './MessageAnchorRail';
 import { MessageList } from './MessageList';
 import { ScrollControl } from './ScrollControl';
 import { StatusPanel, StatusPanelErrorBoundary } from './StatusPanel';
+import { ClaudeBackgroundTasksPanel } from './StatusPanel/ClaudeBackgroundTasksPanel';
 import { WelcomeScreen } from './WelcomeScreen';
 import { ConversationSearch } from './ConversationSearch';
 import type { MessageListRevealHandle } from './ConversationSearch/types';
@@ -28,6 +31,8 @@ import { CodexPetStatusBridge } from './codexPet/CodexPetStatusBridge';
 import { shouldToggleCodexPet } from './codexPet/petState';
 import { useCodexPetPreference } from './codexPet/useCodexPetPreference';
 import { reconcileMessageKeys, type MessageKeySnapshot } from '../utils/messageUtils';
+import { StartupHistoryLoadBanner } from './StartupHistoryLoadBanner';
+import type { StartupHistoryLoadState } from '../types/startupHistory';
 import { CodexPlanActions } from './CodexPlanActions';
 import type { CodexPlanItem } from '../hooks/useCodexPlanState';
 
@@ -53,6 +58,7 @@ export interface ChatScreenProps {
   filteredFileChanges: FileChangeList;
   subagentHistoryCtxValue: SubagentHistoryMap;
   sessionIdCtxValue: { currentSessionId: string | null; currentProvider: string };
+  startupHistoryLoadState: StartupHistoryLoadState | null;
 
   // Refs
   chatInputRef: RefObject<ChatInputBoxHandle | null>;
@@ -98,8 +104,11 @@ export interface ChatScreenProps {
   activeProviderConfig: ProviderState['activeProviderConfig'];
   claudeSettingsAlwaysThinkingEnabled: ProviderState['claudeSettingsAlwaysThinkingEnabled'];
   reasoningEffort: ProviderState['reasoningEffort'];
+  claudeUltracode?: boolean;
+  onClaudeUltracodeChange?: (enabled: boolean) => void;
   codexFastMode: ProviderState['codexFastMode'];
   dshPreset: ProviderState['dshPreset'];
+  ompApprovalMode: ProviderState['ompApprovalMode'];
   streamingEnabledSetting: ProviderState['streamingEnabledSetting'];
   sendShortcut: ProviderState['sendShortcut'];
   autoOpenFileEnabled: ProviderState['autoOpenFileEnabled'];
@@ -115,6 +124,7 @@ export interface ChatScreenProps {
   onReasoningChange: ProviderState['handleReasoningChange'];
   onCodexFastModeChange: ProviderState['handleCodexFastModeChange'];
   onDshPresetChange: ProviderState['handleDshPresetChange'];
+  onOmpApprovalModeChange: ProviderState['handleOmpApprovalModeChange'];
   onToggleThinking: ProviderState['handleToggleThinking'];
   onStreamingEnabledChange: ProviderState['handleStreamingEnabledChange'];
   onAutoOpenFileEnabledChange: ProviderState['handleAutoOpenFileEnabledChange'];
@@ -123,6 +133,8 @@ export interface ChatScreenProps {
   // Message queue
   messageQueue: MessageQueueValue;
   onRemoveFromQueue: (id: string) => void;
+  /** Edit queued message: dequeue it and restore its draft into the input */
+  onEditFromQueue: (id: string) => void;
   /** Drag-sort callback; orderedIds[0] is the next message to execute */
   onReorderQueue?: (orderedIds: string[]) => void;
 
@@ -131,6 +143,7 @@ export interface ChatScreenProps {
   codexPlanExecutionPending?: boolean;
   codexCompactionPending?: boolean;
   codexCompactionStartedAt?: number | null;
+  codexTurnActive?: boolean;
   onExecuteCodexPlan?: () => void;
   onContinueCodexPlan?: () => void;
 }
@@ -146,7 +159,7 @@ export interface ChatScreenProps {
 export const ChatScreen = ({
   mergedMessages, sessionTitle, getMessageText, getContentBlocks, findToolResult, getToolResultRaw,
   subagents, globalTodos, filteredFileChanges,
-  subagentHistoryCtxValue, sessionIdCtxValue,
+  subagentHistoryCtxValue, sessionIdCtxValue, startupHistoryLoadState,
   chatInputRef, messagesContainerRef, messagesEndRef, inputAreaRef,
   messageNodeMapRef, userCollapsedRef, messageListRef, isAutoScrollingRef,
   anchorCollapsedCount, setAnchorCollapsedCount, onMessageNodeRef,
@@ -158,22 +171,30 @@ export const ChatScreen = ({
   codexNativeAutoReviewAvailable = true,
   sdkStatusLoading, sdkStatusError, onRetrySdkStatus, currentSdkInstalled,
   activeProviderConfig, claudeSettingsAlwaysThinkingEnabled,
-  reasoningEffort, codexFastMode, dshPreset, streamingEnabledSetting, sendShortcut, autoOpenFileEnabled,
+  reasoningEffort, claudeUltracode, onClaudeUltracodeChange, codexFastMode, dshPreset, ompApprovalMode, streamingEnabledSetting, sendShortcut, autoOpenFileEnabled,
   longContextEnabled, usagePercentage, usageUsedTokens, usageMaxTokens,
-  onModeSelect, onModelSelect, onAgentSelect, onReasoningChange, onCodexFastModeChange, onDshPresetChange, onToggleThinking,
+  onModeSelect, onModelSelect, onAgentSelect, onReasoningChange, onCodexFastModeChange, onDshPresetChange, onOmpApprovalModeChange, onToggleThinking,
   onStreamingEnabledChange,
   onAutoOpenFileEnabledChange, onLongContextChange,
-  messageQueue, onRemoveFromQueue, onReorderQueue,
+  messageQueue, onRemoveFromQueue, onEditFromQueue, onReorderQueue,
   codexPlan = null, codexPlanExecutionPending = false,
   codexCompactionPending = false,
   codexCompactionStartedAt = null,
+  codexTurnActive = false,
   onExecuteCodexPlan, onContinueCodexPlan,
 }: ChatScreenProps) => {
   const { t } = useTranslation();
   const { messages, status, loading, isThinking, streamingActive, loadingStartTime, subagentHistories } = useMessages();
   // Native stream cleanup can precede the control reply without ending its wait.
-  const waiting = loading || codexCompactionPending;
+  // codexTurnActive mirrors the native FIFO (operationQueued → operationDone), so
+  // a turn that is really running — including plan execution, which never
+  // claims `loading` — keeps its stop button even when `loading` missed the
+  // stream lifecycle.
+  const waiting = loading || codexCompactionPending || codexTurnActive;
   const { currentSessionId } = useSession();
+  const sessionSuppliers = useSessionSuppliers(currentProvider,
+    loading || streamingActive || codexTurnActive || codexPlanExecutionPending || codexCompactionPending);
+  const sessionThinking = sessionSuppliers.thinkingSettings;
   const previousMessageKeySnapshotRef = useRef<MessageKeySnapshot | undefined>(undefined);
   const messageKeySnapshot = useMemo(
     () => reconcileMessageKeys(
@@ -282,6 +303,7 @@ export const ChatScreen = ({
           isAutoScrollingRef={isAutoScrollingRef}
         />
         <div className="messages-container" ref={messagesContainerRef}>
+          <StartupHistoryLoadBanner state={startupHistoryLoadState} currentSessionId={currentSessionId} />
           {messages.length === 0 && (
             <WelcomeScreen
               currentProvider={currentProvider}
@@ -336,6 +358,10 @@ export const ChatScreen = ({
 
       <ScrollControl containerRef={messagesContainerRef} inputAreaRef={inputAreaRef} />
 
+      {/* Zero-height anchor: its pill rides the status tabs' top border. */}
+      <ClaudeBackgroundTasksPanel provider={currentProvider} sessionId={currentSessionId}
+        foregroundActive={waiting} onStop={onInterrupt} />
+
       <StatusPanelErrorBoundary>
         <StatusPanel
           todos={globalTodos}
@@ -362,85 +388,92 @@ export const ChatScreen = ({
       )}
 
       <div className="input-area" ref={inputAreaRef}>
-        <ChatInputBox
-          ref={chatInputRef}
-          isLoading={waiting}
-          selectedModel={selectedModel}
-          permissionMode={permissionMode}
-          codexNativeAutoReviewAvailable={codexNativeAutoReviewAvailable}
-          currentProvider={currentProvider}
-          usagePercentage={usagePercentage}
-          usageUsedTokens={usageUsedTokens}
-          usageMaxTokens={usageMaxTokens}
-          showUsage={true}
-          alwaysThinkingEnabled={activeProviderConfig?.settingsConfig?.alwaysThinkingEnabled ?? claudeSettingsAlwaysThinkingEnabled}
-          placeholder={sendShortcut === 'cmdEnter' ? t('chat.inputPlaceholderCmdEnter') : t('chat.inputPlaceholderEnter')}
-          sdkInstalled={currentSdkInstalled}
-          sdkStatusLoading={sdkStatusLoading}
-          sdkStatusError={sdkStatusError !== null}
-          onRetrySdkStatus={onRetrySdkStatus}
-          onInstallSdk={() => {
-            setSettingsInitialTab('dependencies');
-            setCurrentView('settings');
-          }}
-          value={draftInput}
-          onInput={setDraftInput}
-          onSubmit={handleSubmit}
-          onStop={onInterrupt}
-          onModeSelect={onModeSelect}
-          onModelSelect={onModelSelect}
-          onProviderSelect={onProviderSelect}
-          reasoningEffort={reasoningEffort}
-          dshPreset={dshPreset}
-          onReasoningChange={onReasoningChange}
-          codexFastMode={codexFastMode}
-          onCodexFastModeChange={onCodexFastModeChange}
-          onDshPresetChange={onDshPresetChange}
-          onToggleThinking={onToggleThinking}
-          streamingEnabled={streamingEnabledSetting}
-          onStreamingEnabledChange={onStreamingEnabledChange}
-          sendShortcut={sendShortcut}
-          selectedAgent={selectedAgent}
-          onAgentSelect={onAgentSelect}
-          activeFile={contextInfo?.file}
-          selectedLines={contextInfo?.startLine !== undefined && contextInfo?.endLine !== undefined
-            ? (contextInfo.startLine === contextInfo.endLine
-                ? `L${contextInfo.startLine}`
-                : `L${contextInfo.startLine}-${contextInfo.endLine}`)
-            : undefined}
-          onClearContext={() => setContextInfo(null)}
-          onOpenAgentSettings={() => {
-            setSettingsInitialTab('agents');
-            setCurrentView('settings');
-          }}
-          onOpenCliSettings={() => {
-            setSettingsInitialTab('providers');
-            setSettingsProviderSubTab('cli');
-            setCurrentView('settings');
-          }}
-          onOpenPromptSettings={() => {
-            setSettingsInitialTab('prompts');
-            setCurrentView('settings');
-          }}
-          onOpenModelSettings={() => {
-            setAddModelDialogOpen(true);
-          }}
-          hasMessages={messages.length > 0}
-          onRewind={onRewind}
-          statusPanelExpanded={statusPanelExpanded}
-          onToggleStatusPanel={() => {
-            userCollapsedRef.current = !userCollapsedRef.current;
-            forceStatusUpdate((c) => c + 1);
-          }}
-          addToast={addToast}
-          messageQueue={messageQueue}
-          onRemoveFromQueue={onRemoveFromQueue}
-          onReorderQueue={onReorderQueue}
-          autoOpenFileEnabled={autoOpenFileEnabled}
-          onAutoOpenFileEnabledChange={onAutoOpenFileEnabledChange}
-          longContextEnabled={longContextEnabled}
-          onLongContextChange={onLongContextChange}
-        />
+        <SessionSupplierContext.Provider value={sessionSuppliers}>
+          <ChatInputBox
+            ref={chatInputRef}
+            isLoading={waiting}
+            selectedModel={selectedModel}
+            permissionMode={permissionMode}
+            codexNativeAutoReviewAvailable={codexNativeAutoReviewAvailable}
+            currentProvider={currentProvider}
+            usagePercentage={usagePercentage}
+            usageUsedTokens={usageUsedTokens}
+            usageMaxTokens={usageMaxTokens}
+            showUsage={true}
+            alwaysThinkingEnabled={sessionThinking?.enabled ?? activeProviderConfig?.settingsConfig?.alwaysThinkingEnabled ?? claudeSettingsAlwaysThinkingEnabled}
+            placeholder={sendShortcut === 'cmdEnter' ? t('chat.inputPlaceholderCmdEnter') : t('chat.inputPlaceholderEnter')}
+            sdkInstalled={currentSdkInstalled}
+            sdkStatusLoading={sdkStatusLoading}
+            sdkStatusError={sdkStatusError !== null}
+            onRetrySdkStatus={onRetrySdkStatus}
+            onInstallSdk={() => {
+              setSettingsInitialTab('dependencies');
+              setCurrentView('settings');
+            }}
+            value={draftInput}
+            onInput={setDraftInput}
+            onSubmit={handleSubmit}
+            onStop={onInterrupt}
+            onModeSelect={onModeSelect}
+            onModelSelect={onModelSelect}
+            onProviderSelect={onProviderSelect}
+            reasoningEffort={reasoningEffort}
+            dshPreset={dshPreset}
+            ompApprovalMode={ompApprovalMode}
+            onReasoningChange={onReasoningChange}
+            claudeUltracode={claudeUltracode}
+            onClaudeUltracodeChange={onClaudeUltracodeChange}
+            codexFastMode={codexFastMode}
+            onCodexFastModeChange={onCodexFastModeChange}
+            onDshPresetChange={onDshPresetChange}
+            onOmpApprovalModeChange={onOmpApprovalModeChange}
+            onToggleThinking={currentProvider === 'claude' ? sessionThinking?.onChange ?? (() => {}) : onToggleThinking}
+            streamingEnabled={streamingEnabledSetting}
+            onStreamingEnabledChange={onStreamingEnabledChange}
+            sendShortcut={sendShortcut}
+            selectedAgent={selectedAgent}
+            onAgentSelect={onAgentSelect}
+            activeFile={contextInfo?.file}
+            selectedLines={contextInfo?.startLine !== undefined && contextInfo?.endLine !== undefined
+              ? (contextInfo.startLine === contextInfo.endLine
+                  ? `L${contextInfo.startLine}`
+                  : `L${contextInfo.startLine}-${contextInfo.endLine}`)
+              : undefined}
+            onClearContext={() => setContextInfo(null)}
+            onOpenAgentSettings={() => {
+              setSettingsInitialTab('agents');
+              setCurrentView('settings');
+            }}
+            onOpenCliSettings={() => {
+              setSettingsInitialTab('providers');
+              setSettingsProviderSubTab('cli');
+              setCurrentView('settings');
+            }}
+            onOpenPromptSettings={() => {
+              setSettingsInitialTab('prompts');
+              setCurrentView('settings');
+            }}
+            onOpenModelSettings={() => {
+              setAddModelDialogOpen(true);
+            }}
+            hasMessages={messages.length > 0}
+            onRewind={onRewind}
+            statusPanelExpanded={statusPanelExpanded}
+            onToggleStatusPanel={() => {
+              userCollapsedRef.current = !userCollapsedRef.current;
+              forceStatusUpdate((c) => c + 1);
+            }}
+            addToast={addToast}
+            messageQueue={messageQueue}
+            onRemoveFromQueue={onRemoveFromQueue}
+            onEditFromQueue={onEditFromQueue}
+            onReorderQueue={onReorderQueue}
+            autoOpenFileEnabled={autoOpenFileEnabled}
+            onAutoOpenFileEnabledChange={onAutoOpenFileEnabledChange}
+            longContextEnabled={longContextEnabled}
+            onLongContextChange={onLongContextChange}
+          />
+        </SessionSupplierContext.Provider>
       </div>
     </>
   );

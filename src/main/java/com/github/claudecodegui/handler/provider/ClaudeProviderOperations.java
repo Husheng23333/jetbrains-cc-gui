@@ -1,7 +1,8 @@
 package com.github.claudecodegui.handler.provider;
 
-import com.github.claudecodegui.bridge.NodeDetector;
+import com.github.claudecodegui.util.ClaudeConfigDir;
 import com.github.claudecodegui.handler.core.HandlerContext;
+import com.github.claudecodegui.provider.claude.ClaudePlanUsageService;
 import com.github.claudecodegui.settings.ProviderManager;
 
 import com.github.claudecodegui.model.DeleteResult;
@@ -13,7 +14,6 @@ import com.intellij.openapi.diagnostic.Logger;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 /**
  * Handles Claude provider CRUD operations and switching.
@@ -98,22 +98,6 @@ public class ClaudeProviderOperations {
             });
         } catch (Exception e) {
             LOG.error("[ProviderHandler] Failed to get providers: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Get current Claude CLI configuration (~/.claude/settings.json).
-     */
-    public void handleGetCurrentClaudeConfig() {
-        try {
-            JsonObject config = context.getSettingsService().getCurrentClaudeConfig();
-            String configJson = GSON.toJson(config);
-
-            ApplicationManager.getApplication().invokeLater(() -> {
-                context.callJavaScript("window.updateCurrentClaudeConfig", context.escapeJs(configJson));
-            });
-        } catch (Exception e) {
-            LOG.error("[ProviderHandler] Failed to get current claude config: " + e.getMessage(), e);
         }
     }
 
@@ -253,6 +237,11 @@ public class ClaudeProviderOperations {
                 LOG.warn("[ProviderHandler] Failed to shut down Claude daemon during switch", e);
             }
 
+            // The cached rate_limit snapshot was reported for the account active before
+            // the switch, so the plan-usage bar would keep showing its figure until the
+            // new account emits an event of its own.
+            ClaudePlanUsageService.clearRateLimitCache();
+
             if (ProviderManager.DISABLED_PROVIDER_ID.equals(id)) {
                 context.getSettingsService().deactivateClaudeProvider();
 
@@ -276,7 +265,7 @@ public class ClaudeProviderOperations {
 
             if (ProviderManager.LOCAL_SETTINGS_PROVIDER_ID.equals(id)) {
                 // Validate settings.json exists
-                Path settingsPath = Paths.get(NodeDetector.resolveHomeForFileOps(), ".claude", "settings.json");
+                Path settingsPath = ClaudeConfigDir.settingsJson();
                 if (!Files.exists(settingsPath)) {
                     LOG.warn("[ProviderHandler] Local settings.json does not exist at: " + settingsPath);
                     ApplicationManager.getApplication().invokeLater(() -> {
@@ -299,15 +288,15 @@ public class ClaudeProviderOperations {
                     return;
                 }
 
-                JsonObject config = context.getSettingsService().readConfig();
-                if (!config.has("claude")) {
-                    JsonObject claude = new JsonObject();
-                    claude.add("providers", new JsonObject());
-                    claude.addProperty("current", "");
-                    config.add("claude", claude);
-                }
-                config.getAsJsonObject("claude").addProperty("current", id);
-                context.getSettingsService().writeConfig(config);
+                context.getSettingsService().updateConfig(config -> {
+                    if (!config.has("claude")) {
+                        JsonObject claude = new JsonObject();
+                        claude.add("providers", new JsonObject());
+                        claude.addProperty("current", "");
+                        config.add("claude", claude);
+                    }
+                    config.getAsJsonObject("claude").addProperty("current", id);
+                });
 
                 LOG.info("[ProviderHandler] Switched to LOCAL settings.json provider");
 
@@ -325,15 +314,15 @@ public class ClaudeProviderOperations {
                 context.getSettingsService().applyCliLoginToClaudeSettings();
 
                 // Update config.json to set CLI login as current provider
-                JsonObject config = context.getSettingsService().readConfig();
-                if (!config.has("claude")) {
-                    JsonObject claude = new JsonObject();
-                    claude.add("providers", new JsonObject());
-                    claude.addProperty("current", "");
-                    config.add("claude", claude);
-                }
-                config.getAsJsonObject("claude").addProperty("current", id);
-                context.getSettingsService().writeConfig(config);
+                context.getSettingsService().updateConfig(config -> {
+                    if (!config.has("claude")) {
+                        JsonObject claude = new JsonObject();
+                        claude.add("providers", new JsonObject());
+                        claude.addProperty("current", "");
+                        config.add("claude", claude);
+                    }
+                    config.getAsJsonObject("claude").addProperty("current", id);
+                });
 
                 LOG.info("[ProviderHandler] Switched to CLI login provider");
 

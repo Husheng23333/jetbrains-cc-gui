@@ -1,3 +1,10 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/img/illustrations/01-hero-zh-dark.webp" />
+  <img alt="IDE 里的 CC GUI 对话面板，展开的 CLI 菜单里有 Claude Code、Codex、Grok CLI、Kimi CLI、OpenCode、PI CLI、OMP CLI、DeepSeek Harness、MiniMax Code 和 ZCode" src="./docs/img/illustrations/01-hero-zh-light.webp" />
+</picture>
+
+---
+
 <div align="center">
 
 # CC GUI（Claude, Codex and More）
@@ -26,6 +33,8 @@
 
 [CC GUI（Claude, Codex and More） 下载](https://plugins.jetbrains.com/plugin/29342-cc-gui-claude-or-codex-)
 
+Windows 用户请看 [Windows 安装与排错指南（英文）](docs/WINDOWS_GUIDE.md)。
+
 ---
 
 ## 核心特性
@@ -33,12 +42,12 @@
 ### 多 AI 引擎支持
 - **Claude Code** - Anthropic 官方 AI 编程助手，支持 Opus 4.5 等多模型
 - **OpenAI Codex** - OpenAI 强大的代码生成引擎
-- **Grok CLI**（Beta）- xAI 的命令行 AI 编程助手
-- **Kimi CLI**（Beta）- 月之暗面（Moonshot AI）的命令行 AI 编程助手
-- **OpenCode**（Beta）- 开源终端 AI 编程 Agent
-- **PI CLI**（Beta）- PI 命令行 AI 编程助手
-- **OMP CLI**（Beta）- OMP 命令行 AI 编程助手
-- **DeepSeek Harness**（Beta）- DeepSeek 的命令行编程 Harness
+- **Grok CLI** - xAI 的命令行 AI 编程助手
+- **Kimi CLI** - 月之暗面（Moonshot AI）的命令行 AI 编程助手
+- **OpenCode** - 开源终端 AI 编程 Agent
+- **PI CLI** - PI 命令行 AI 编程助手
+- **OMP CLI** - OMP 命令行 AI 编程助手
+- **DeepSeek Harness** - DeepSeek 的命令行编程 Harness
 
 ### 智能对话功能
 - 上下文感知的 AI 编程助手
@@ -53,6 +62,17 @@
 - MCP 服务器支持，扩展 AI 能力边界
 
 ### 开发者体验
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/img/illustrations/03-permission-zh-dark.webp" />
+  <img alt="权限模式菜单（默认、规划、代理、自动审批、全自动），以及执行命令的审批弹窗：允许一次、总是允许、拒绝" src="./docs/img/illustrations/03-permission-zh-light.webp" />
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/img/illustrations/02-changes-zh-dark.webp" />
+  <img alt="一轮对话里的批量编辑文件和运行命令卡片，以及列出三个改动文件、带回撤全部和保存全部按钮的编辑面板" src="./docs/img/illustrations/02-changes-zh-light.webp" />
+</picture>
+
 - 完善的权限管理和安全控制
 - 代码 DIFF 对比功能
 - 文件跳转和代码导航
@@ -61,6 +81,12 @@
 - 国际化支持（中/英文自动切换）
 
 ### 会话管理
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/img/illustrations/04-history-zh-dark.webp" />
+  <img alt="Claude Code 和 Codex 各自的历史会话列表，星标会话排在最前，顶部有标题搜索框" src="./docs/img/illustrations/04-history-zh-light.webp" />
+</picture>
+
 - 历史会话记录和搜索
 - 会话收藏功能
 - 消息导出支持

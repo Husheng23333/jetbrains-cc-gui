@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { getSessionTransitionPending, subscribeSessionTransition } from './utils/sessionTransitionState';
 import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -9,15 +10,16 @@ import {
   useRewindHandlers,
   useHistoryLoader,
   useMessageQueue,
+  takeQueuedMessageForEdit,
   useMessageProcessing,
   useMessageSender,
   useChatComputations,
 } from './hooks';
 import type { UseWindowCallbacksOptions, UseMessageSenderOptions } from './hooks';
-import {
-  CONTEXT_COMMANDS,
-} from './hooks/useMessageSender';
-import { parseCodexCommand } from './hooks/codexCommandDispatcher';
+import { isLocalContextCommand } from './hooks/useMessageSender';
+import { useCodexQuestionResponses } from './hooks/useCodexQuestionResponses';
+import { isCodexEffortIndependentCommand, parseCodexCommand } from './hooks/codexCommandDispatcher';
+import { isCodexUltraCapabilityUnconfirmed } from './utils/codexReasoningCapabilities';
 import { useCodexTurnActivity } from './hooks/useCodexTurnActivity';
 import { useCodexCompactionStatus } from './hooks/useCodexCompactionStatus';
 import type { Attachment, ChatInputBoxHandle, PermissionMode } from './components/ChatInputBox/types';
@@ -28,6 +30,7 @@ import { useSession } from './contexts/SessionContext';
 import { useUIState } from './contexts/UIStateContext';
 import { useDialogs } from './contexts/DialogContext';
 import type { ApplyHistoryModel } from './applyHistoryModel';
+import { startupHistoryStateForSession, type StartupHistoryLoadState } from './types/startupHistory';
 import { useCodexPlanState } from './hooks/useCodexPlanState';
 
 /**
@@ -44,11 +47,13 @@ export interface ChatControllerModelSlice {
   currentSdkInstalled: UseMessageSenderOptions['currentSdkInstalled'];
   codexNativeAutoReviewAvailable: UseMessageSenderOptions['codexNativeAutoReviewAvailable'];
   reasoningEffort: UseMessageSenderOptions['reasoningEffort'];
+  claudeUltracode?: UseMessageSenderOptions['claudeUltracode'];
   codexFastMode: UseMessageSenderOptions['codexFastMode'];
   codexCollaborationMode: UseMessageSenderOptions['codexCollaborationMode'];
   codexApprovalPreset: UseMessageSenderOptions['codexApprovalPreset'];
   codexSandboxSelection: UseMessageSenderOptions['codexSandboxSelection'];
   dshPreset: UseMessageSenderOptions['dshPreset'];
+  ompApprovalMode: UseMessageSenderOptions['ompApprovalMode'];
   longContextEnabled: UseMessageSenderOptions['longContextEnabled'];
   handleModeSelect: (mode: PermissionMode) => void;
   handleProviderSelect: (providerId: string) => void;
@@ -60,8 +65,11 @@ export interface ChatControllerModelSlice {
   setCodexPermissionMode: UseWindowCallbacksOptions['setCodexPermissionMode'];
   setSelectedClaudeModel: UseWindowCallbacksOptions['setSelectedClaudeModel'];
   setSelectedCodexModel: UseWindowCallbacksOptions['setSelectedCodexModel'];
+  setSelectedGeminiModel?: UseWindowCallbacksOptions['setSelectedGeminiModel'];
+  setGeminiPermissionMode?: UseWindowCallbacksOptions['setGeminiPermissionMode'];
   setLongContextEnabled: UseWindowCallbacksOptions['setLongContextEnabled'];
   setReasoningEffort: UseWindowCallbacksOptions['setReasoningEffort'];
+  setClaudeUltracode?: UseWindowCallbacksOptions['setClaudeUltracode'];
   setCodexFastMode: UseWindowCallbacksOptions['setCodexFastMode'];
   setProviderConfigVersion: UseWindowCallbacksOptions['setProviderConfigVersion'];
   setActiveProviderConfig: UseWindowCallbacksOptions['setActiveProviderConfig'];
@@ -133,7 +141,8 @@ export const useAppChatController = ({
     customSessionTitle, setCustomSessionTitle,
     restoredSessionTitle, setRestoredSessionTitle,
     historyData, setHistoryData,
-    currentSessionIdRef, customSessionTitleRef,
+    regeneratingTitleSessionIds, setRegeneratingTitleSessionIds,
+    currentSessionIdRef, customSessionTitleRef, historyDataRef,
   } = useSession();
 
   // ── UI state (UIStateContext) ──
@@ -142,22 +151,28 @@ export const useAppChatController = ({
     setSettingsInitialTab,
     addToast, clearToasts,
     setContextInfo,
+    setDraftInput,
   } = useUIState();
 
   const chatInputRef = useRef<ChatInputBoxHandle>(null);
+  const [startupHistoryLoadState, setStartupHistoryLoadState] = useState<StartupHistoryLoadState | null>(null);
+
+  useEffect(() => {
+    setStartupHistoryLoadState(previous => startupHistoryStateForSession(previous, currentSessionId));
+  }, [currentSessionId]);
 
   const {
     currentProvider, selectedModel, permissionMode,
     selectedAgent, sdkStatusLoading, currentSdkInstalled,
     codexNativeAutoReviewAvailable,
-    reasoningEffort, codexFastMode, codexCollaborationMode, codexApprovalPreset,
-    codexSandboxSelection, dshPreset, longContextEnabled,
+    reasoningEffort, claudeUltracode, codexFastMode, codexCollaborationMode, codexApprovalPreset,
+    codexSandboxSelection, dshPreset, ompApprovalMode, longContextEnabled,
     handleModeSelect, handleProviderSelect,
     currentProviderRef, syncActiveProviderModelMapping,
     setPermissionMode, setCurrentProvider,
     setClaudePermissionMode, setCodexPermissionMode,
-    setSelectedClaudeModel, setSelectedCodexModel,
-    setLongContextEnabled, setReasoningEffort, setCodexFastMode,
+    setSelectedClaudeModel, setSelectedCodexModel, setSelectedGeminiModel, setGeminiPermissionMode,
+    setLongContextEnabled, setReasoningEffort, setClaudeUltracode, setCodexFastMode,
     setProviderConfigVersion, setActiveProviderConfig,
     setClaudeSettingsAlwaysThinkingEnabled, setStreamingEnabledSetting,
     setSendShortcut, setAutoOpenFileEnabled,
@@ -203,6 +218,9 @@ export const useAppChatController = ({
   // from useSessionManagement). The stable wrapper keeps beginSessionTransition's
   // useCallback from re-creating on every render.
   const clearMessageQueueRef = useRef<() => void>(() => {});
+  // Sent while a session switch was pending: aimed at the incoming session, so
+  // accepting the switch must not drop them along with the outgoing session's queue.
+  const transitionQueuedIdsRef = useRef(new Set<string>());
   const clearQueuedMessages = useCallback(() => {
     clearMessageQueueRef.current();
   }, []);
@@ -216,10 +234,11 @@ export const useAppChatController = ({
     handleConfirmNewSession, handleCancelNewSession,
     handleConfirmInterrupt, handleCancelInterrupt,
     loadHistorySession, deleteHistorySession, deleteHistorySessions, exportHistorySession,
-    toggleFavoriteSession, updateHistoryTitle, applyHistoryTitleLocal, convertToCliSession,
+    toggleFavoriteSession, updateHistoryTitle, applyHistoryTitleLocal, regenerateHistoryTitle,
+    settleTitleRegeneration, convertToCliSession,
   } = useSessionManagement({
     messages, loading, historyData, currentSessionId, currentSessionIdRef, currentProvider,
-    setHistoryData, setMessages, setCurrentView, setCurrentSessionId,
+    setHistoryData, setRegeneratingTitleSessionIds, setMessages, setCurrentView, setCurrentSessionId,
     setCustomSessionTitle, setUsagePercentage, setUsageUsedTokens, setUsageMaxTokens,
     setStatus, setLoading, setIsThinking, setStreamingActive,
     setTaskEvents,
@@ -238,8 +257,8 @@ export const useAppChatController = ({
     setIsThinking, setStreamingActive, setHistoryData,
     setCurrentSessionId, setUsagePercentage, setUsageUsedTokens, setUsageMaxTokens,
     setPermissionMode, setCurrentProvider, setClaudePermissionMode, setCodexPermissionMode,
-    setSelectedClaudeModel, setSelectedCodexModel,
-    setLongContextEnabled, setReasoningEffort, setCodexFastMode,
+    setSelectedClaudeModel, setSelectedCodexModel, setSelectedGeminiModel, setGeminiPermissionMode,
+    setLongContextEnabled, setReasoningEffort, setClaudeUltracode, setCodexFastMode,
     setProviderConfigVersion, setActiveProviderConfig,
     setClaudeSettingsAlwaysThinkingEnabled, setStreamingEnabledSetting,
     setSendShortcut, setAutoOpenFileEnabled,
@@ -264,10 +283,12 @@ export const useAppChatController = ({
     forceClosePermissionDialog, forceCloseAskUserQuestionDialog, forceClosePlanApprovalDialog,
     openContextUsageDialog, updateContextUsageData,
     closeContextUsageDialog,
-    customSessionTitleRef, currentSessionIdRef, updateHistoryTitle, applyHistoryTitleLocal,
+    customSessionTitleRef, currentSessionIdRef, historyDataRef, updateHistoryTitle, applyHistoryTitleLocal,
     setCustomSessionTitle,
+    setRegeneratingTitleSessionIds, settleTitleRegeneration,
     setRestoredSessionTitle,
     setPermissionDialogTimeoutSeconds,
+    setStartupHistoryLoadState,
     clearQueuedMessages,
   });
 
@@ -280,19 +301,22 @@ export const useAppChatController = ({
   // ── Message sender ──
   // Wrap handleProviderSelect to also clear messages and input (like creating a new session)
   const wrappedHandleProviderSelect = useCallback((providerId: string) => {
-    chatInputRef.current?.clear();
-    handleProviderSelect(providerId);
-    forceCreateNewSessionWithProvider(providerId);
+    forceCreateNewSessionWithProvider(providerId, () => {
+      chatInputRef.current?.clear();
+      handleProviderSelect(providerId);
+    });
   }, [forceCreateNewSessionWithProvider, handleProviderSelect]);
 
   const {
     handleSubmit: hookHandleSubmit,
     interruptSession,
+    reasoningCapabilitiesUnconfirmed,
+    queueRetryKey,
   } = useMessageSender({
     t, addToast,
-    currentProvider, selectedModel, permissionMode, reasoningEffort, selectedAgent, codexFastMode,
+    currentProvider, selectedModel, permissionMode, reasoningEffort, claudeUltracode, selectedAgent, codexFastMode,
     codexCollaborationMode, codexApprovalPreset, codexSandboxSelection,
-    codexNativeAutoReviewAvailable, dshPreset,
+    codexNativeAutoReviewAvailable, dshPreset, ompApprovalMode,
     sdkStatusLoading, currentSdkInstalled,
     sentAttachmentsRef, chatInputRef, messagesContainerRef,
     isUserAtBottomRef, userPausedRef, isStreamingRef,
@@ -308,32 +332,88 @@ export const useAppChatController = ({
   });
 
   // ── Message queue ──
+  const sessionTransitionPending = useSyncExternalStore(subscribeSessionTransition, getSessionTransitionPending);
   const {
     queue: messageQueue,
     enqueue: enqueueMessage,
     dequeue: dequeueMessage,
+    dequeueForEdit: dequeueQueuedMessageForEdit,
+    peekQueuedMessage,
     clearQueue,
     reorder: reorderMessageQueue,
-  } = useMessageQueue({ isLoading: loading || codexTurnActive || codexPlanExecutionPending || codexCompactionPending, onExecute: hookHandleSubmit });
+  } = useMessageQueue({ isLoading: loading || codexTurnActive || codexPlanExecutionPending || codexCompactionPending || reasoningCapabilitiesUnconfirmed || sessionTransitionPending,
+    onExecute: hookHandleSubmit, retryKey: queueRetryKey });
+
+  // The edit flow has to look at a queued message before it removes it.
+  const queuedEditSource = useMemo(
+    () => ({ peek: peekQueuedMessage, take: dequeueQueuedMessageForEdit }),
+    [peekQueuedMessage, dequeueQueuedMessageForEdit],
+  );
+
+  /**
+   * Edit a queued message: dequeue it and restore its content and attachments
+   * into the input draft as if it had never been sent. An unsent draft that is
+   * still in the input is never overwritten — the queued message is appended
+   * after it and its attachments are merged in, with a toast explaining the
+   * merge. Nothing is removed while the restore could still fail.
+   */
+  const handleEditQueuedMessage = useCallback((id: string) => {
+    const outcome = takeQueuedMessageForEdit(chatInputRef.current, queuedEditSource, id);
+    if (outcome.status === 'attachments-blocked') {
+      // The message keeps its place: restoring it here would drop its files.
+      addToast(t('chat.queue.editBlockedAttachments'), 'warning');
+      return;
+    }
+    if (outcome.status === 'images-pending') {
+      // Same wait as submit: writing the draft now would cancel the paste.
+      addToast(t('chat.pasteImagePreparing'), 'info');
+      return;
+    }
+    if (outcome.status !== 'restored') return;
+    const restored = outcome.write;
+    setDraftInput(restored.content);
+    if (!restored.attachmentsApplied && restored.queuedAttachmentCount > 0) {
+      addToast(t('chat.queue.attachmentsNotRestored'), 'warning');
+    }
+    if (restored.merged) {
+      addToast(t('chat.queue.mergedIntoDraft'), 'info');
+    }
+  }, [queuedEditSource, addToast, setDraftInput, t]);
+
+  const onCodexAnswerUndelivered = useCallback(() => addToast(t('askUserQuestion.answerNotSent', {
+    defaultValue: 'Your answer to the Codex question was not sent because another chat is open now. '
+      + 'Return to that chat and send the answer again.',
+  }), 'error'), [addToast, t]);
+  useCodexQuestionResponses({ provider: currentProvider, threadId: currentSessionId,
+    enqueue: enqueueMessage, onUndelivered: onCodexAnswerUndelivered });
 
   // Point the session-transition indirection at the real clearQueue.
   useEffect(() => {
-    clearMessageQueueRef.current = clearQueue;
+    clearMessageQueueRef.current = () => clearQueue(item => transitionQueuedIdsRef.current.has(item.id));
   }, [clearQueue]);
+  // Once the switch settles, those messages belong to whichever session won; a later reset drops them.
+  useEffect(() => subscribeSessionTransition(() => {
+    if (!getSessionTransitionPending()) transitionQueuedIdsRef.current.clear();
+  }), []);
 
   // handleSubmit with queue support (new session and local commands bypass loading check)
   const handleSubmit = useCallback((content: string, attachments?: Attachment[]) => {
     const text = content.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
     if (!text && !hasAttachments) return;
+    // A timed-out swap can be explicitly retried; /new is a lifecycle action
+    // and must not become a queued model message behind that same swap.
+    if (parseCodexCommand(text)?.kind === 'new') {
+      forceCreateNewSession();
+      return;
+    }
+    if (getSessionTransitionPending()) {
+      transitionQueuedIdsRef.current.add(enqueueMessage(content, attachments));
+      return;
+    }
     // Local commands work even while loading
     if (text.startsWith('/')) {
       const parsedCommand = parseCodexCommand(text);
-      // New session commands
-      if (parsedCommand?.kind === 'new') {
-        forceCreateNewSession();
-        return;
-      }
       // /resume - open history view
       if (parsedCommand?.kind === 'resume') {
         setCurrentView('history');
@@ -347,8 +427,8 @@ export const useAppChatController = ({
         addToast(t('chat.planModeEnabled', { defaultValue: 'Plan mode enabled' }), 'info');
         return;
       }
-      // /context - handled locally even while loading
-      if (text.split(/\s+/)[0].toLowerCase() === '/context' || CONTEXT_COMMANDS.has(text.split(/\s+/)[0].toLowerCase())) {
+      // /context answered by the plugin works even while loading; OMP's own /context is an ordinary message
+      if (isLocalContextCommand(text, currentProvider)) {
         hookHandleSubmit(content, attachments);
         return;
       }
@@ -358,13 +438,17 @@ export const useAppChatController = ({
         return;
       }
     }
-    // If loading, add to queue
-    if (loading || codexTurnActive || codexPlanExecutionPending || codexCompactionPending) {
+    // The input defers dispatch after clearing its draft. If capabilities were
+    // invalidated in that gap, preserve this submission in the paused queue.
+    const capabilitiesPending = currentProvider === 'codex'
+      && !isCodexEffortIndependentCommand(parseCodexCommand(text))
+      && isCodexUltraCapabilityUnconfirmed(selectedModel, reasoningEffort);
+    if (loading || codexTurnActive || codexPlanExecutionPending || codexCompactionPending || capabilitiesPending) {
       enqueueMessage(content, attachments);
       return;
     }
-    hookHandleSubmit(content, attachments);
-  }, [loading, codexTurnActive, codexPlanExecutionPending, codexCompactionPending, enqueueMessage, hookHandleSubmit, forceCreateNewSession, currentProvider, handleModeSelect, setCurrentView, addToast, t]);
+    if (hookHandleSubmit(content, attachments) === 'blocked') enqueueMessage(content, attachments);
+  }, [loading, codexTurnActive, codexPlanExecutionPending, codexCompactionPending, enqueueMessage, hookHandleSubmit, forceCreateNewSession, currentProvider, selectedModel, reasoningEffort, handleModeSelect, setCurrentView, addToast, t]);
 
   // ── Chat-view computations (stage 5 of TASK-P1-01) ──
   const {
@@ -419,20 +503,24 @@ export const useAppChatController = ({
     findToolResult, getToolResultRaw, subagents, allSubagents, globalTodos,
     filteredFileChanges, rewindableMessages,
     subagentHistoryCtxValue, sessionIdCtxValue,
+    startupHistoryLoadState,
     // Refs
     chatInputRef, messagesContainerRef, messagesEndRef, inputAreaRef, isAutoScrollingRef,
     // Message actions
     handleUndoFile, onDiscardAll, handleKeepAll,
-    handleSubmit, interruptSession, messageQueue, dequeueMessage, reorderMessageQueue,
+    handleSubmit, interruptSession, messageQueue, dequeueMessage, handleEditQueuedMessage, reorderMessageQueue,
     handleOpenRewindSelectDialog, handleNavigateToProviderSettings, wrappedHandleProviderSelect,
     codexPlan, codexPlanExecutionPending,
     codexCompactionPending,
+    codexTurnActive,
     onExecuteCodexPlan: executeCodexPlan,
     codexCompactionStartedAt,
     onContinueCodexPlan: handleContinueCodexPlan,
     // Session management
-    createNewSession, loadHistorySession, deleteHistorySession, deleteHistorySessions,
-    exportHistorySession, toggleFavoriteSession, updateHistoryTitle, convertToCliSession,
+    createNewSession, forceCreateNewSession, loadHistorySession, deleteHistorySession, deleteHistorySessions,
+    exportHistorySession, toggleFavoriteSession, updateHistoryTitle, applyHistoryTitleLocal,
+    regenerateHistoryTitle, convertToCliSession,
+    regeneratingTitleSessionIds,
     showNewSessionConfirm, handleConfirmNewSession, handleCancelNewSession,
     showInterruptConfirm, handleConfirmInterrupt, handleCancelInterrupt,
     // Rewind

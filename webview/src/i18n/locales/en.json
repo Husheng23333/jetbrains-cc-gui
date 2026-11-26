@@ -1,4 +1,71 @@
 {
+  "sessionSupplier": {
+    "label": "Supplier",
+    "choose": "Select a supplier",
+    "nextTurn": "Applies to the next turn",
+    "unavailable": "Supplier unavailable. Reopen this menu to retry or select another supplier."
+  },
+  "startupHistory": {
+    "unloaded": "History for this restored session has not been loaded.",
+    "loading": "Loading session history...",
+    "loaded_one": "Loaded {{count}} history message.",
+    "loaded_other": "Loaded {{count}} history messages.",
+    "missing": "The saved history is no longer available. A new session is ready.",
+    "timeout": "Session history loading timed out. Select Retry to try again.",
+    "cancelled": "Session history loading was cancelled. Select Retry to try again.",
+    "failed": "Session history loading failed. Select Retry to try again.",
+    "superseded": "Newer activity interrupted history loading. Select Retry to load it.",
+    "load": "Load history",
+    "retry": "Retry",
+    "cancel": "Cancel"
+  },
+  "markdownReview": {
+    "legacyContextCard": "Markdown review context",
+    "contextCard_one": "Markdown review · {{count}} item",
+    "contextCard_other": "Markdown review · {{count}} items",
+    "contextDetails": "Source snapshot and reference",
+    "settings": {
+      "submitShortcut": {
+        "label": "Markdown comment submit shortcut",
+        "enter": "Enter submits, Ctrl+Enter inserts a newline",
+        "ctrlEnter": "Ctrl+Enter submits, Enter inserts a newline",
+        "hint": "Applies to adding and saving comments. Shift+Enter always inserts a newline; use Command on macOS. IME confirmation does not submit."
+      },
+      "title": "Markdown reviews (current project)",
+      "on": "Enabled",
+      "off": "Disabled",
+      "error": "Unable to update review preferences. Reopen settings and try again.",
+      "enabled": {
+        "label": "Enable Markdown preview annotations (beta)",
+        "hint": "Add review controls to the current project's native Markdown preview. Disabling hides the overlay immediately and keeps current comments. After enabling, a preview that is already open must be reopened once to show the controls."
+      },
+      "autoAddToChat": {
+        "label": "Automatically add comments to the current chat draft (beta)",
+        "hint": "Off by default. Creating or editing a comment adds its latest snapshot to the selected CC GUI chat input. Review the draft before sending. Completing or deleting a comment also withdraws its automatically added draft; manually added comments and quotes are kept."
+      },
+      "autoDeleteAffected": {
+        "label": "Automatically delete comments that can no longer be located (beta)",
+        "hint": "Comments are kept as \"Source changed\" while the beginning or end of the quoted text can still be found; edits and line breaks alone do not delete them. A comment is removed only when no fragment can be located. Formatted selections may cover a whole source block. Cleanup does not prove completion: the agent must report unfinished items. Automatically added drafts are withdrawn with a removed comment; manual transfers and quotes remain intact."
+      },
+      "persist": {
+        "label": "Keep comments and pending snapshots after restart (beta)",
+        "hint": "Off by default: keep data only while this project is open. Enable to save to the project workspace. Disabling removes stored content on the next IDE save and retains current comments. Chat messages still use their existing storage. While off, comments and unsent drafts are lost when the project closes or the IDE restarts."
+      },
+      "versionRequired": "Markdown annotations require IntelliJ IDEA 2024.3 or newer."
+    },
+    "count_one": "{{count}} review item",
+    "count_other": "{{count}} review items",
+    "removeBatch": "Remove review from draft",
+    "remove": "Remove",
+    "snapshot": "This draft is a snapshot; later source comments do not change it.",
+    "tooLarge": "This review is too large. Remove some items before sending.",
+    "block": "Source block",
+    "source": "Selected text",
+    "quote": "Quotation",
+    "attached": "Located",
+    "ambiguous": "Multiple possible locations",
+    "orphaned": "Original text changed"
+  },
   "codexPet": {
     "title": "Codex pet",
     "close": "Hide pet",
@@ -43,6 +110,18 @@
     "optional": "Optional"
   },
   "chat": {
+    "planUsage": {
+      "unavailable": "Usage unavailable",
+      "dash": "Usage —",
+      "loading": "Loading usage…",
+      "tooltipWindow": "{{period}} {{percent}}%",
+      "tooltipWindowWithReset": "{{period}} {{percent}}% · Resets {{value}}",
+      "clickToSwitch": "Click to switch between windows",
+      "switchWindowHint": "Click period label to switch window",
+      "worstHint": "Dot shows worst window ({{color}})",
+      "worstDot": "Worst window: {{color}}",
+      "stale": "Data may be outdated (refresh failed)"
+    },
     "sendMessage": "Send message to {{provider}}",
     "createNewSession": "Create New Session",
     "confirmNewSession": "Current session has messages. Are you sure you want to create a new session?",
@@ -61,6 +140,17 @@
     "currentMode": "Current mode: {{mode}}",
     "currentModel": "Current model: {{model}}",
     "removeAttachment": "Remove attachment",
+    "queue": {
+      "edit": "Edit queued message",
+      "remove": "Remove from queue",
+      "editLabel": "Edit queued message {{position}}",
+      "removeLabel": "Remove queued message {{position}}",
+      "reorderLabel": "Reorder message {{position}}",
+      "reorderHint": "Drag to reorder, or focus and use arrow keys",
+      "mergedIntoDraft": "Queued message added to the current draft",
+      "attachmentsNotRestored": "Attachments from the queued message were not restored",
+      "editBlockedAttachments": "Its attachments cannot be restored here, so the message stays in the queue"
+    },
     "closePreview": "Close preview",
     "loadingDropdown": "Loading...",
     "modelsLoadFailed": "Failed to load models. Click to retry",
@@ -75,6 +165,11 @@
     "usagePercentage": "Usage: {{percentage}}",
     "planUsage": {
       "title": "Claude plan usage",
+      "balanceLabel": "Balance: ",
+      "balanceRemaining": "Balance: {{value}}",
+      "balanceDetail": "Total {{total}} · Used {{used}}",
+      "grokTitle": "Grok plan usage",
+      "staleIdle": "Last reading. It refreshes the next time you use Grok",
       "loading": "Loading usage…",
       "unavailable": "Usage unavailable",
       "dash": "Usage —",
@@ -82,7 +177,12 @@
       "tooltipReset": "Resets: {{value}} (local time)",
       "clickToSwitch": "Click period label to switch window",
       "worstHint": "Dot shows worst window ({{color}})",
-      "paceColors": { "green": "green", "yellow": "yellow", "red": "red", "neutral": "unknown" },
+      "paceColors": {
+        "green": "green",
+        "yellow": "yellow",
+        "red": "red",
+        "neutral": "unknown"
+      },
       "stale": "Data may be outdated (refresh failed)"
     },
     "noMatchingFiles": "No matching files",
@@ -110,6 +210,10 @@
     "localProject": "Local",
     "disabled": "Disabled",
     "sdkNotInstalled": "{{provider}} SDK is not installed. Please install the SDK to start chatting.",
+    "codexUltraCapabilitiesLoading": "Checking Ultra availability. Try sending again when model loading finishes.",
+    "codexUltraCapabilitiesUnavailable": "Could not verify Ultra availability. Retry loading models or choose another effort.",
+    "sessionTransitionTakingLonger": "The session change is taking longer than expected. You can try opening it again; queued messages are paused.",
+    "sessionTransitionInProgress": "A session change is already in progress. Please wait a moment.",
     "sdkStatusLoading": "Checking SDK status...",
     "pasteImagePreparing": "Preparing pasted image...",
     "sdkStatusUnavailable": "Could not check SDK status.",
@@ -133,6 +237,7 @@
     "totalDuration": "This reply took",
     "tokenUsage": "{{input}} in / {{output}} out",
     "tokenUsageDetail": "Turn total — input {{input}} · cache write {{cacheWrite}} · cache read {{cacheRead}} · output {{output}}",
+    "tokenUsageThinking": "Thinking {{thinking}}",
     "cacheHitsWithRatio": " (cache hit {{tokens}}, {{ratio}})",
     "search": {
       "ariaLabel": "Search in conversation",
@@ -147,8 +252,7 @@
       "matchCase": "Match Case (Alt+C)",
       "wholeWord": "Match Whole Word (Alt+W)",
       "regex": "Use Regular Expression (Alt+R)",
-      "invalidRegex": "Invalid regex",
-      "openTooltip": "Search in conversation (Cmd/Ctrl+F)"
+      "invalidRegex": "Invalid regex"
     },
     "compactSummary": {
       "receivedTime": "Recorded time",
@@ -175,8 +279,37 @@
     "codexReviewStarted": "Codex is reviewing the workspace",
     "codexDiffUsage": "Use /diff without arguments",
     "codexApprovalsUsage": "Use /approvals without arguments",
+    "codexCliOutdated": "Codex CLI {{version}} is outdated; some models and permission modes may not work. Update to {{minimumVersion}} or newer.",
     "codexSandboxConflict": "Codex automatic review cannot use danger-full-access. Choose workspace-write or request approval.",
-    "continueRefiningPlan": "Continue refining this plan:"
+    "continueRefiningPlan": "Continue refining this plan:",
+    "backgroundTasksRunning": "{{count}} background tasks running",
+    "backgroundTasksRunning_one": "{{count}} background task running",
+    "backgroundTasksRunning_other": "{{count}} background tasks running",
+    "stopBackgroundTasks": "Stop background tasks",
+    "backgroundTasksPill": "{{count}} background tasks",
+    "backgroundTasksPill_one": "{{count}} background task",
+    "backgroundTasksPill_other": "{{count}} background tasks",
+    "backgroundTasksTitle": "Background tasks",
+    "backgroundTasksActive": "{{count}} running",
+    "backgroundTasksActive_one": "{{count}} running",
+    "backgroundTasksActive_other": "{{count}} running",
+    "backgroundTasksStopAfterAnswer": "Can stop after the answer",
+    "backgroundTaskDetails": {
+      "type": "Type",
+      "taskId": "Task ID",
+      "runId": "Run ID",
+      "parent": "Parent",
+      "elapsed": "Running for"
+    },
+    "backgroundTaskTypes": {
+      "local_bash": "Command",
+      "local_agent": "Subagent",
+      "remote_agent": "Remote agent",
+      "local_workflow": "Workflow",
+      "in_process_teammate": "Teammate",
+      "monitor_mcp": "Monitor",
+      "other": "Task"
+    }
   },
   "settings": {
     "title": "Settings",
@@ -448,6 +581,11 @@
         "placeholder": "e.g. /usr/local/bin/claude — leave empty to use the bundled SDK",
         "hint": "Optional. When set, the plugin spawns this binary instead of the bundled @anthropic-ai/claude-agent-sdk. Daemon restarts on save."
       },
+      "claudeConfigDir": {
+        "label": "Claude Config Directory (override)",
+        "placeholder": "e.g. ~/.claude-work — leave empty to use CLAUDE_CONFIG_DIR or ~/.claude",
+        "hint": "Optional. Chat history, session actions and the Claude process read this directory instead of ~/.claude. The plugin's settings.json and MCP servers follow it; its skills and hooks pages still use ~/.claude. Usage statistics add it to ~/.claude (combined, not per profile) and a running statistics server picks it up at its next sync; usage already counted stays if you clear it. Use an absolute path or ~/…; with a WSL node a Linux path such as /home/me/.claude-work works, and the Windows CLAUDE_CONFIG_DIR is not used. Pair it with the Claude CLI path of the same profile. Daemon restarts on save."
+      },
       "workingDirectory": {
         "label": "Working Directory",
         "placeholder": "e.g. project1 or leave empty to use project root",
@@ -498,6 +636,17 @@
         "disabled": "Disabled",
         "hint": "When enabled, selecting a file in the project tree will automatically send its file path to AI (note: only the file path is sent, not the file content). When disabled, manual action is required."
       },
+      "loadHistoryOnStartup": {
+        "label": "Load Session History on Startup",
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "hint": "When enabled, restored sessions load their message history automatically after the webview starts. Disable this if history loading slows down or blocks startup."
+      },
+      "historyLoadTimeout": {
+        "label": "Session History Load Timeout",
+        "unit": "seconds",
+        "hint": "Automatic restore and manual loading share this timeout (5-120 seconds). Timed-out loads can be retried in the conversation."
+      },
       "promptEnhancer": {
         "label": "Prompt Enhancer",
         "modelLabel": "Enhancer Model",
@@ -547,6 +696,12 @@
         "enabled": "Enabled",
         "disabled": "Disabled",
         "hint": "When enabled, shows the 'AI Generate Commit Message' button in the commit dialog. When disabled, the button is hidden."
+      },
+      "sessionGitRepositoryMatching": {
+        "label": "Match sessions by Git remote repository",
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "hint": "Include Codex and Claude Code history from other directories with the same normalized remote host, owner, and repository. When Git information is unavailable, match by working directory."
       },
       "statusBarWidget": {
         "label": "Status Bar Info Display",
@@ -665,6 +820,11 @@
       "codex": "Codex",
       "cli": "CLI"
     },
+    "gemini": {
+      "idleReapLabel": "Stop silent turns automatically",
+      "idleReapHelp": "Ends a Gemini turn that has produced no output for this many minutes — usually a CLI stuck at an interactive prompt or a stalled backend. 0 disables automatic stopping.",
+      "idleReapDisabled": "Disabled"
+    },
     "cli": {
       "hint": "These CLIs must be installed and configured in your system terminal. The plugin only detects installation status and version — it will never install them for you. Confirm each CLI works in the terminal before coming back here to use it.",
       "refresh": "Re-check",
@@ -716,6 +876,10 @@
         "dsh": {
           "name": "DeepSeek Harness",
           "description": "DeepSeek terminal agent CLI (dsh)"
+        },
+        "gemini": {
+          "name": "Antigravity CLI",
+          "description": "Google Antigravity terminal coding agent (agy)"
         }
       },
       "installDialog": {
@@ -896,6 +1060,132 @@
     "agentsDesc": "Manage and configure AI agents",
     "skills": "Skills",
     "skillsDesc": "Manage and configure skill modules",
+    "hooks": {
+      "title": "Hooks",
+      "description": "Inspect and safely edit Codex and Claude Code hooks.",
+      "refresh": "Refresh",
+      "provider": "Provider",
+      "scope": "Scope",
+      "all": "All",
+      "allProviders": "All providers",
+      "allScopes": "All scopes",
+      "global": "User",
+      "project": "Project",
+      "projectLocal": "Project (local override)",
+      "search": "Search hooks",
+      "searchPlaceholder": "Search events, commands, or paths",
+      "noMatches": "No hooks match the current filters.",
+      "toggleUnavailable": "Individual hook enable/disable controls are unavailable until each provider's runtime semantics are verified.",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "enable": "Enable hook",
+      "disable": "Disable hook",
+      "managedToggleHint": "CCGUI-managed toggle. The original configuration is preserved and can be restored.",
+      "nativeToggleHint": "Changes your Codex user preference. Trust, feature settings, and policy still control execution.",
+      "toggleFailed": "Hook toggle failed",
+      "loading": "Scanning hook locations...",
+      "empty": "No hooks were discovered.",
+      "valid": "Schema recognized",
+      "validationWarning": "Needs review",
+      "matcher": "Matcher",
+      "noCommand": "No command",
+      "readOnly": "Read-only",
+      "viewSource": "View source",
+      "editSource": "Edit source",
+      "sourcePreview": "Hook source preview",
+      "sourceTab": "Source",
+      "detailsTab": "Details",
+      "viewMode": "Hook view",
+      "loadingSource": "Loading source...",
+      "sourceEditor": "Hook source editor",
+      "affectedFile": "Affected file",
+      "backupDirectory": "Backup directory",
+      "latestBackup": "Restore last backup from this editor session",
+      "lastModified": "Last modified",
+      "event": "Event",
+      "format": "Format",
+      "revision": "Revision",
+      "command": "Command",
+      "validationIssues": "Validation issues",
+      "providerFields": "Provider-specific fields",
+      "noProviderFields": "No provider-specific fields",
+      "none": "None",
+      "reviewChanges": "Review changes",
+      "hideChanges": "Hide changes",
+      "noChanges": "No changes to save",
+      "technicalInfo": "Technical information",
+      "moreActions": "More actions",
+      "conflictTitle": "This hook source changed outside CC GUI",
+      "conflictDescription": "Reload the external version, or keep your draft while synchronizing to the latest revision before saving again.",
+      "reloadExternal": "Reload external version",
+      "keepDraft": "Keep draft and sync",
+      "discardDraft": "Discard draft",
+      "discardChangesTitle": "Discard unsaved changes?",
+      "discardChangesMessage": "Your changes have not been saved and cannot be recovered after closing the editor.",
+      "backupOnSave": "A backup is created before saving",
+      "save": "Save",
+      "saving": "Saving...",
+      "restore": "Restore last backup from this editor session",
+      "saveFailed": "Save failed",
+      "sourceLoadFailed": "Source reload failed",
+      "noPreview": "No preview available.",
+      "sourceNotice": "{{count}} hook sources need review. Editing or toggling is restricted for affected entries.",
+      "issues": {
+        "COMMAND_MISSING": "Command is missing",
+        "TYPE_MISSING": "Type is missing",
+        "HOOKS_NOT_OBJECT": "Hooks must be an object",
+        "SETTINGS_NOT_OBJECT": "Settings must be an object",
+        "INVALID_JSON": "Invalid JSON",
+        "HOOK_ENTRY_NOT_OBJECT": "Hook entry is not an object",
+        "INVALID_TOML": "Invalid TOML",
+        "CODEX_HOOKS_NOT_TABLE": "Codex hooks must be a table",
+        "CODEX_HOOK_EVENT_NOT_ARRAY": "Codex hook events must be arrays of tables",
+        "CODEX_HOOK_ENTRY_NOT_TABLE": "Codex hook entries must be tables",
+        "CODEX_ENABLED_INVALID": "Codex hook enabled field is missing or invalid",
+        "CODEX_MATCHER_INVALID": "Codex hook matcher field is invalid",
+        "CODEX_COMMANDS_INVALID": "Hook handler is missing a valid command or MCP tool",
+        "CODEX_HOOKS_FEATURE_DISABLED": "The Codex hooks feature is not enabled",
+        "READ_FAILED": "Read failed",
+        "CODEX_EVENT_UNSUPPORTED": "Event is not supported by the verified Codex schema",
+        "CODEX_HANDLER_UNSUPPORTED": "Handler type is not supported by the verified Codex schema",
+        "CODEX_HOOK_FILE_FIELDS_INVALID": "Hook file fields are invalid",
+        "CODEX_STATE_INLINE_UNSUPPORTED": "Inline state cannot be safely edited; use a state table",
+        "LINKED_SOURCE_READ_ONLY": "Linked files are read-only; edit the original file directly.",
+        "HOOK_SOURCE_UNAVAILABLE": "The source file is unavailable."
+      },
+      "sharedProjectWarning": "Project configuration may be committed and affect other users. Review the file diff before sharing.",
+      "bridgeUnavailable": "The IDE connection is unavailable. Reopen the settings page and try again.",
+      "sourceTimeout": "Reading timed out. Reload the source before editing.",
+      "mutationTimeout": "Confirmation timed out. Refresh before retrying because the change may have been saved.",
+      "mutationConfirmedLate": "The delayed save was confirmed. Reload the source to synchronize; your draft was retained.",
+      "sharedToggleTitle": "Confirm shared project change",
+      "sharedToggleMessage": "This changes the shared .claude/settings.json file and may affect other contributors. Disabled-hook recovery data stays on this machine.",
+      "confirmSharedToggle": "Change shared configuration",
+      "sensitiveSourceWarning": "This file may contain credentials and other sensitive configuration. Reveal it only when you are ready to edit it.",
+      "revealSource": "Reveal configuration",
+      "errors": {
+        "HOOK_SHARED_CONFIRMATION_REQUIRED": "Confirm the shared project configuration change first.",
+        "HOOK_CATALOG_TIMEOUT": "Hook refresh timed out. Refresh before changing another hook.",
+        "HOOK_REVISION_CONFLICT": "The file changed outside this page. Refresh and try again.",
+        "HOOK_RESTORE_CONFLICT": "The hook could not be restored because this event is no longer a list in the file. Fix the file, then try again.",
+        "HOOK_TOGGLE_LOCKED": "Another change to this file is in progress. Try again in a moment.",
+        "HOOK_TOGGLE_LOCK_FAILED": "Could not lock the file for this change.",
+        "HOOK_FILE_LOCKED": "Another change to this file is in progress. Try again in a moment.",
+        "HOOK_NOT_FOUND": "This hook is no longer in the file. Refresh the list.",
+        "HOOK_NOT_DISABLED": "This hook is not disabled. Refresh the list.",
+        "HOOK_ALREADY_DISABLED": "This hook is already disabled. Refresh the list.",
+        "HOOK_STATE_WRITE_FAILED": "Could not save the disabled-hook record. The file change was rolled back where possible.",
+        "HOOK_TOGGLE_FAILED": "The hook could not be changed.",
+        "INVALID_HOOK_PATH": "This file can't be changed here. Linked files and files outside the known locations are read-only.",
+        "INVALID_BACKUP_PATH": "The backup file is not available.",
+        "SOURCE_TOO_LARGE": "The file is larger than 128 KB and can't be edited here.",
+        "INVALID_REQUEST": "The request was invalid. Refresh the page and try again.",
+        "WRITE_FAILED": "The file could not be saved.",
+        "RESTORE_FAILED": "The backup could not be restored.",
+        "UNSUPPORTED_HOOK_PROVIDER": "This kind of hook can't be changed here.",
+        "UNKNOWN_ERROR": "Unknown error."
+      }
+    },
     "other": {
       "title": "Other Settings",
       "description": "Configure miscellaneous settings",
@@ -971,6 +1261,38 @@
     "wechatPay": "WeChat Pay",
     "paypal": "PayPal",
     "provider": {
+      "backup": {
+        "exportInvalidConfig": "Export failed: a saved provider configuration did not pass validation. No backup file was created.",
+        "errorProvider": "Check saved provider #{{index}} (excluding local settings and CLI login entries).",
+        "errorField": "Field: {{field}}.",
+        "import": "Import",
+        "export": "Export",
+        "importFile": "Import from CC GUI backup",
+        "importTitle": "Import {{engine}} providers",
+        "exportTitle": "Export {{engine}} providers",
+        "scope": "Only saved providers in this tab (including keys) are transferred. Local CLI login sessions and active status are excluded.",
+        "mergeHint": "Import trusted files only. Identical configurations are skipped; different ones are added without overwriting or activating. Names, notes, IDs and timestamps do not affect deduplication.",
+        "selectFile": "Select backup file",
+        "passwordOptional": "Export password (optional)",
+        "passwordRequired": "Enter the file password",
+        "confirmPassword": "Confirm password",
+        "plaintextWarning": "I understand: without a password, API keys will be exported in plain text. Keep the file secure.",
+        "passwordHint": "Use at least 8 characters; a long, unique password is recommended. Lost passwords cannot be recovered.",
+        "passwordShort": "The password must contain at least 8 characters.",
+        "passwordMismatch": "The passwords do not match.",
+        "working": "Working, please wait…",
+        "importSuccess": "Import complete: {{imported}} added, {{skipped}} duplicate configurations skipped.",
+        "exportSuccess": "Configuration exported.",
+        "exportPartial": "Providers exported: {{exported}}. Skipped because they failed validation: {{skipped}} ({{positions}}; numbering excludes local settings and CLI login entries).",
+        "invalidFile": "Invalid file, unsupported version or invalid provider configuration. Nothing was imported.",
+        "wrongEngine": "This file belongs to a different tab. Select the matching Claude Code / Codex tab.",
+        "tooLarge": "File or configuration too large (8 MiB per file, up to 2000 providers).",
+        "empty": "No provider configurations to process.",
+        "wrongPassword": "Incorrect password or damaged encrypted file. Nothing was imported.",
+        "failed": "Operation failed. Check file permissions and configuration, then retry.",
+        "busy": "Another import/export operation is in progress. Please retry later.",
+        "timeout": "Timed out waiting for the result. The operation may still be running; check the list or exported file before retrying."
+      },
       "currentConfig": "Current ClaudeCode Configuration",
       "loading": "Loading...",
       "noConfig": "No local configuration found",
@@ -1384,6 +1706,9 @@
     }
   },
   "history": {
+    "confirmDirectoryTitle": "Open session in another directory?",
+    "confirmDirectoryMessage": "Commands and file changes will run in the directory shown below.",
+    "executionDirectory": "Run in",
     "title": "History",
     "sessionDeleted": "Session deleted",
     "confirmDelete": "Confirm Delete",
@@ -1423,6 +1748,16 @@
     "cancelEditButton": "Cancel",
     "titleTooLong": "Title too long (max 50 characters)",
     "titleUpdated": "Title updated",
+    "regenerateTitle": "Regenerate title from conversation",
+    "titleRegenerated": "Title regenerated",
+    "titleRegenerateFailed": {
+      "generic": "Title regeneration failed",
+      "emptySession": "No conversation content to derive a title from",
+      "disabled": "AI title generation is disabled in settings",
+      "sessionNotFound": "Session transcript file not found",
+      "generationFailed": "Title generation failed, please try again later",
+      "customTitle": "This session has a manual title, which takes precedence over the AI title"
+    },
     "copySessionId": "Copy session ID for CLI resume",
     "sessionIdCopied": "Session ID copied",
     "copyFailed": "Copy failed",
@@ -1460,7 +1795,9 @@
       "minutesAgo": "minutes ago",
       "secondsAgo": "seconds ago"
     },
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "sessionInUse": "In-use sessions cannot be deleted.",
+    "deleteFailed": "Failed to delete the session. Please try again."
   },
   "permission": {
     "dialogTitle": "Permission Request",
@@ -1493,6 +1830,7 @@
     "codexDeliveryUnconfirmed": "Codex has not confirmed your choice yet ({{error}}). It may still take effect, so do not answer again; if the conversation does not continue, click Stop and send your message again."
   },
   "askUserQuestion": {
+    "ompTitle": "OMP has some questions for you",
     "title": "Claude has some questions for you",
     "progress": "Question {{current}} / {{total}}",
     "multiSelectHint": "You can select multiple options",
@@ -1506,7 +1844,11 @@
     "timeoutWarning": "Please answer soon, dialog will close in {{seconds}} seconds",
     "expand": "Expand",
     "collapse": "Collapse",
-    "clickToAnswer": "Click to answer"
+    "clickToAnswer": "Click to answer",
+    "recordTitle": "Codex questions",
+    "recordAnswer": "Your answer",
+    "recordSkipped": "Skipped (closed without an answer)",
+    "answerNotSent": "Your answer to the Codex question was not sent because another chat is open now. Return to that chat and send the answer again."
   },
   "planApproval": {
     "title": "Plan Ready for Approval",
@@ -1540,7 +1882,11 @@
     "invalidJsonConfig": "Invalid JSON config format",
     "providerAdded": "Provider added",
     "providerUpdated": "Provider updated",
-    "providerDeleted": "Provider deleted"
+    "providerDeleted": "Provider deleted",
+    "codexSettingsDispatchFailed": "Cannot send Codex settings to the IDE. Reopen the chat and try again.",
+    "codexSettingsRuntimeInactive": "The Codex runtime is inactive. Reopen the chat and try again.",
+    "codexSettingsServiceUnavailable": "The Codex service is unavailable. Reopen the chat and try again.",
+    "codexSettingsUpdateFailed": "Could not confirm Codex settings. Reopen the chat and try again."
   },
   "config": {
     "clickToCopy": "Click to copy",
@@ -1638,6 +1984,24 @@
     "errorRetry": "Retry"
   },
   "mcp": {
+    "nativeToolCount": "{{count}} tools",
+    "nativeRuntime": {
+      "notStarted": "Not started",
+      "starting": "Connecting",
+      "connected": "Connected",
+      "authenticationRequired": "Authentication required",
+      "failed": "Connection failed",
+      "cancelled": "Cancelled",
+      "disabled": "Disabled",
+      "unknown": "Connection status unknown"
+    },
+    "nativeAuth": {
+      "unsupported": "OAuth not applicable",
+      "notLoggedIn": "OAuth not logged in",
+      "bearerToken": "Token authentication",
+      "oAuth": "OAuth logged in",
+      "unknown": "Authentication status unknown"
+    },
     "title": "MCP Servers",
     "whatIsMcp": "What is MCP?",
     "refreshStatus": "Refresh server status",
@@ -1885,6 +2249,12 @@
     "bashGroupCompleted": "completed",
     "bashGroupAllCompleted": "All Completed",
     "bashGroupFailed": "failed",
+    "bashGroupCopyCommand": "Copy command",
+    "bashGroupCopyOutput": "Copy output",
+    "bashGroupOutput": "Output",
+    "bashGroupOutputFailed": "Failed",
+    "bashGroupRunning": "Running…",
+    "bashGroupNoOutput": "(no output)",
     "promptLabel": "Prompt",
     "updatePlan": "Update Plan",
     "applyPatch": "Apply Patch",
@@ -1932,6 +2302,7 @@
       "loading": "Loading Agent process…",
       "unavailable": "Process log is unavailable until this session has an id.",
       "reportGenerated": "Structured analysis report generated",
+      "historyTruncated": "History shortened: {{count}} records omitted. The initial task and recent activity are retained.",
       "unitMs": "ms",
       "unitS": "s",
       "unitTools": "tools",
@@ -2134,6 +2505,9 @@
     }
   },
   "models": {
+    "gemini": {
+      "vanishedSelection": "Model {{model}} is no longer available — switched back to the CLI default model."
+    },
     "addModel": "Add Model",
     "searchPlaceholder": "Search models",
     "clearSearch": "Clear search",
@@ -2180,13 +2554,13 @@
         "label": "Haiku 4.5",
         "description": "Haiku 4.5 · Fastest for quick answers"
       },
+      "fable52": {
+        "label": "Fable 5.2",
+        "description": "Fable 5.2 · Most powerful · Mythos-class"
+      },
       "fable51": {
         "label": "Fable 5.1",
-        "description": "Fable 5.1 · Most powerful · Mythos-class"
-      },
-      "fable5": {
-        "label": "Fable 5",
-        "description": "Fable 5 · Previous Fable generation"
+        "description": "Fable 5.1 · Previous Fable generation"
       }
     },
     "codex": {
@@ -2241,7 +2615,12 @@
     "effort": "Effort",
     "speed": "Speed",
     "preset": "Preset",
-    "model": "Model"
+    "approvals": "Approvals",
+    "model": "Model",
+    "ultracode": {
+      "label": "Ultracode",
+      "description": "Native Claude workflow with automatic task delegation. Keeps your selected effort."
+    }
   },
   "modes": {
     "default": {
@@ -2273,6 +2652,12 @@
       "shortLabel": "Full Auto",
       "tooltip": "Bypass all permission checks",
       "description": "Fully automated, bypassing all permission checks [Use with caution]"
+    },
+    "sandbox": {
+      "label": "Sandbox Mode",
+      "shortLabel": "Sandbox",
+      "tooltip": "Sandboxed execution (Gemini CLI only)",
+      "description": "Runs in a sandbox with terminal restrictions enabled (Gemini CLI)"
     }
   },
   "workspaceDiff": {
@@ -2360,7 +2745,7 @@
       "label": "ZCode"
     },
     "gemini": {
-      "label": "Gemini Cli"
+      "label": "Antigravity CLI"
     },
     "opencode": {
       "label": "OpenCode"
@@ -2370,11 +2755,6 @@
     },
     "omp": {
       "label": "OMP CLI"
-    },
-    "beta": {
-      "badge": "Beta",
-      "title": "Beta Feature",
-      "message": "This feature is still in Beta. If you encounter any bugs, please report them to the author promptly."
     },
     "dsh": {
       "label": "DeepSeek Harness"
@@ -2489,6 +2869,10 @@
     "max": {
       "label": "Max",
       "description": "Maximum reasoning depth"
+    },
+    "ultra": {
+      "label": "Ultra",
+      "description": "Maximum reasoning with automatic task delegation"
     }
   },
   "errorBoundary": {
@@ -2526,6 +2910,16 @@
     "codexNetworkErrorChecks": "Please check:\n1. Is the network connection working\n2. If using a proxy, please confirm proxy configuration\n3. Is the firewall blocking the connection",
     "codexError": "Codex error:",
     "codexErrorCheck": "Please check network connection and Codex configuration",
+    "geminiAuthRequired": "Gemini CLI authentication required:",
+    "geminiAuthCause": "- Cause: The Gemini CLI (agy) is not logged in or credentials have expired.",
+    "geminiAuthResolution": "- Resolution: Run 'agy' in an external terminal and complete the interactive Google Sign-In flow.",
+    "geminiAuthNote": "- Note: This plugin does not manage Google credentials or perform Google login in-plugin.",
+    "geminiErrorDetails": "Error details",
+    "geminiIdleReapStopped": "Gemini turn stopped automatically: no output from the Gemini CLI (agy) for {{window}}.",
+    "geminiIdleReapCauseAlive": "- Likely cause: the CLI process was alive but silent — it is likely stuck at an interactive prompt (most commonly authentication) or stalled on the backend/network.",
+    "geminiIdleReapCauseExited": "- Likely cause: the CLI process had already exited without delivering a result.",
+    "geminiIdleReapWhatToDo": "- What to do: run 'agy' in an external terminal to check your login, then cancel and retry; if the turn was legitimately silent (e.g. a long build), raise the window.",
+    "geminiIdleReapSetting": "- This limit is configurable: set gemini.idleReapMinutes in the Gemini plugin settings (0 disables automatic stopping).",
     "codexThinkingHint": "Codex did not return reasoning items. If you still cannot see the thinking process, please refer to docs/codex/docs/config.md for hide_agent_reasoning/show_raw_agent_reasoning settings, and ensure your OpenAI account has been verified.",
     "userDeniedPermission": "User denied permission for {{toolName}} tool",
     "userDidNotProvideAnswers": "User did not provide answers",
@@ -2538,7 +2932,19 @@
     "uploadedImages": "Uploaded {{count}} image(s)",
     "uploadedAttachments": "Uploaded attachment(s)",
     "emptyMessage": "Empty message",
-    "attachment": "Attachment"
+    "attachment": "Attachment",
+    "workspaceSubstituted": "[Notice] Working directory substituted: requested \"{{requested}}\", using \"{{effective}}\" ({{reason}}).",
+    "workspaceReasonUnsafe": "unsafe working directory",
+    "workspaceReasonPluginInternal": "plugin-internal directory",
+    "workspaceReasonMissing": "directory does not exist",
+    "workspaceReasonNotADirectory": "not a directory",
+    "workspaceReasonTemporary": "temporary directory",
+    "attachmentNotDelivered": {
+      "notice": "[Notice] Attachment not delivered: \"{{name}}\" ({{reason}}).",
+      "nonImage": "only image attachments are supported",
+      "tooLarge": "image exceeds the 2 MB per-image limit",
+      "invalid": "image data is missing or unreadable"
+    }
   },
   "changelog": {
     "title": "What's New",
@@ -2554,6 +2960,25 @@
     "fast": {
       "label": "Fast",
       "description": "Codex fast response mode (uses additional credits)"
+    }
+  },
+  "ompApprovals": {
+    "title": "Select OMP approval mode",
+    "default": {
+      "label": "Default",
+      "description": "Full auto unless OMP's tools.approvalMode is set"
+    },
+    "alwaysAsk": {
+      "label": "Ask",
+      "description": "Asks before edits and commands"
+    },
+    "write": {
+      "label": "Auto-approve edits",
+      "description": "Asks only before commands"
+    },
+    "yolo": {
+      "label": "Full auto",
+      "description": "Never asks"
     }
   },
   "dshPresets": {
@@ -2601,14 +3026,85 @@
     "updateClaudeSdkCustomCli": "SDK updated to {{version}}, but the plugin runs your custom Claude CLI ({{path}}). Update it with Option 2.",
     "updateClaudeSdkAlreadyLatest": "{{version}} is already the newest SDK this plugin supports, and this model needs a newer Claude Code. Update the plugin when a new release is out, or choose another model.",
     "codexWriterConflict": {
-      "title": "Codex thread is busy",
-      "intro": "Another Codex turn or client is writing to this conversation. This send could not start.",
-      "reason": "Stop the turn in the client using this conversation, then send again after it has ended."
+      "title": "Codex conversation is in use",
+      "intro": "Another Codex client or chat window owns this conversation’s writer.",
+      "reason": "This does not mean the conversation expired. The plugin does not delete locks or stop other clients automatically.",
+      "solutions": {
+        "releaseWriter": {
+          "title": "Release the conversation in its current client",
+          "step0": "Stop the task and close or release this conversation in the Codex client or chat window using it.",
+          "step1": "After that client releases the conversation, return here and send again. Do not delete writer lock files to force access."
+        }
+      }
+    },
+    "codexThreadClosing": {
+      "title": "Codex conversation is still closing",
+      "intro": "Codex has not finished closing this conversation, so it cannot restore it yet.",
+      "reason": "The plugin briefly retries this explicit closing error before starting your task. If it persists, the original error remains visible.",
+      "solutions": {
+        "waitForClose": {
+          "title": "Wait for the previous conversation to close",
+          "step0": "Wait until the previous Codex client or chat window finishes releasing the conversation, then retry.",
+          "step1": "If this repeats, reopen the conversation from history after the previous client has released it."
+        }
+      }
+    },
+    "codexThreadHistoryMissing": {
+      "title": "Codex history could not be found",
+      "intro": "The current Codex runtime cannot find this conversation’s native history.",
+      "reason": "A different history directory or an incomplete first initialization can cause this. It does not prove the history was deleted.",
+      "solutions": {
+        "checkStorage": {
+          "title": "Check the original history location",
+          "step0": "Check that Codex uses the original CODEX_HOME and the same host environment, including local versus WSL.",
+          "step1": "After restoring the original history directory or backup, reopen the conversation from history."
+        },
+        "startNewIfMissing": {
+          "title": "Start again only if the history cannot be recovered",
+          "step0": "Create a new conversation and provide the needed context again only if the original history is unrecoverable. Messages displayed here do not automatically restore Codex’s native context."
+        }
+      }
+    },
+    "codexThreadArchived": {
+      "title": "Codex conversation is archived",
+      "intro": "Codex reports that this conversation is archived and cannot be resumed directly.",
+      "reason": "Archived history is not an expired thread. Creating a new conversation is not required to recover it.",
+      "solutions": {
+        "unarchive": {
+          "title": "Unarchive the original conversation",
+          "step0": "Unarchive it in the original Codex client, or follow the unarchive command shown in the original error.",
+          "step1": "Refresh the plugin’s history list, reopen this conversation, and send again."
+        }
+      }
+    },
+    "codexThreadResumeConfiguration": {
+      "title": "Codex configuration blocked recovery",
+      "intro": "Codex could not load its configuration or initialize a required MCP server.",
+      "reason": "A new conversation will not repair the same configuration. The plugin does not disable required services automatically.",
+      "solutions": {
+        "repairConfiguration": {
+          "title": "Repair the configuration reported by Codex",
+          "step0": "Read the original error to identify the configuration entry or required MCP server that failed.",
+          "step1": "Fix the corresponding configuration, credentials, or connection in Codex, provider, or MCP settings, then reopen the conversation and retry."
+        }
+      }
     },
     "codexThreadResume": {
-      "title": "Session thread is no longer valid",
-      "intro": "Creating a new session will resolve this issue. The thread ID for the current session no longer exists on the Codex server.",
-      "reason": "Codex clears old threads after a period of time, which can trigger this error when resuming a previous session."
+      "title": "Could not restore the Codex conversation",
+      "intro": "Codex failed to restore this conversation. The cause has not been identified.",
+      "reason": "A recovery failure does not establish that the conversation expired. The plugin keeps its identity instead of silently replacing it with an empty conversation.",
+      "solutions": {
+        "inspectCause": {
+          "title": "Check the original error before retrying",
+          "step0": "Review the original error and check the provider, Codex runtime, and history directory used by this conversation.",
+          "step1": "If a response or tool execution already appeared, check its result before resending to avoid repeating the task."
+        },
+        "checkCli": {
+          "title": "Check Codex CLI compatibility",
+          "step0": "Compare this terminal version with the plugin’s CLI page. For a custom CLI path, run that executable with --version.",
+          "step1": "If the original error indicates an unsupported CLI or protocol version, update Codex using the official instructions, then refresh CLI detection."
+        }
+      }
     },
     "sdkNativeBinaryMissing": {
       "title": "SDK installation incomplete — native binary missing",
@@ -2642,6 +3138,25 @@
         }
       }
     },
+    "claudeCodeWindowsTooOld": {
+      "title": "Claude Code cannot start on this version of Windows",
+      "intro": "Windows stopped Claude Code from starting because a system function it needs was not found (error 0xC0000139). This usually means Windows is too old: Claude Code 2.1.118 and later use ClosePseudoConsole, which requires Windows 10 version 1809 or Windows Server 2019.",
+      "reason": "Windows rejects the program while loading it, before Claude Code runs, so changing the model, provider or permission settings will not help.",
+      "solutions": {
+        "updateWindows": {
+          "title": "Option 1: Update Windows",
+          "step0": "Update to Windows 10 version 1809 or later, or Windows Server 2019 or later. These versions include the missing function."
+        },
+        "useOlderSdk": {
+          "title": "Option 2: Switch to an older SDK",
+          "step0": "In Dependency Management, switch the SDK version to v0.2.112 or earlier. Newer models may not accept that older version. If a model asks for a newer Claude Code, choose another model or update Windows: updating the SDK brings this error back."
+        },
+        "checkCustomCli": {
+          "title": "Option 3: Check your custom Claude CLI",
+          "step0": "If you set \"Claude CLI Path (override)\", the plugin runs that binary instead of the SDK, so switching the SDK has no effect. Clear the path or point it to an older Claude Code. Check this first if your Windows is already up to date."
+        }
+      }
+    },
     "spawnEbusy": {
       "title": "spawn EBUSY — child process failed to launch",
       "intro": "This error is typically caused by an incompatible Node.js version or an incomplete SDK installation. Try the two options below in order:",
@@ -2655,6 +3170,38 @@
           "title": "Option 2: Reinstall the latest SDK from the official npm registry",
           "step0": "1. Switch to the official npm registry (avoid the Taobao mirror — it may not have the latest version):",
           "step1": "2. Open Dependency Management and reinstall the latest SDK:"
+        }
+      }
+    },
+    "codexCliVersionTooOld": {
+      "title": "Codex CLI is too old for this permission mode",
+      "intro": "Full Auto and Auto Mode use the automatic reviewer setting. This Codex CLI does not recognize it and rejected the request, so your message was not processed.",
+      "reason": "The plugin runs the Codex CLI found on your machine, so updating the plugin does not update the CLI. If the error continues after updating, an older codex may come first on your PATH.",
+      "solutions": {
+        "updateCodexCli": {
+          "title": "Option 1: Install or update the CLI using the official instructions",
+          "step0": "1. Open the official instructions and choose the standalone installer, npm, or Homebrew for your runtime environment. Update through the original installation channel; do not use npm uninstall for a standalone installation:",
+          "step1": "2. In a new terminal, confirm the version has changed, then restart the IDE so the plugin picks up the new CLI:"
+        },
+        "useDefaultMode": {
+          "title": "Option 2: Switch the permission mode for now",
+          "step0": "Switch to Default Mode. It does not use the automatic reviewer, so you can keep working until the CLI is updated. If the error continues, update the CLI as described in Option 1."
+        }
+      }
+    },
+    "codexCliAppServerTooOld": {
+      "title": "Codex CLI is too old to start",
+      "intro": "The local Codex CLI prints its version, but it is too old to accept the --listen option the plugin passes to codex app-server, so it exits right away.",
+      "reason": "The plugin runs the Codex CLI found on your machine, so updating the plugin does not update the CLI. If the error continues after updating, an older codex may come first on your PATH.",
+      "solutions": {
+        "updateCodexCli": {
+          "title": "Option 1: Install or update the CLI using the official instructions",
+          "step0": "1. Open the official instructions and choose the standalone installer, npm, or Homebrew for your runtime environment. Update through the original installation channel; do not use npm uninstall for a standalone installation:",
+          "step1": "2. In a new terminal, confirm the version has changed, then restart the IDE so the plugin picks up the new CLI:"
+        },
+        "pointCodexBin": {
+          "title": "Option 2: Point the plugin at a working binary",
+          "step0": "List every codex on your PATH (on Windows: where codex). If the working one is not first, set the CODEX_BIN environment variable to its full path and restart the IDE. The plugin also falls back to later installs automatically."
         }
       }
     },

@@ -36,6 +36,7 @@ class ClaudeDaemonRequestExecutor {
         this.outputExtractor = outputExtractor;
     }
 
+
     CompletableFuture<SDKResult> sendMessageViaDaemon(
             DaemonBridge daemon,
             String channelId,
@@ -51,6 +52,8 @@ class ClaudeDaemonRequestExecutor {
             Boolean streaming,
             Boolean disableThinking,
             String reasoningEffort,
+            boolean ultracode,
+            boolean projectTrusted,
             MessageCallback callback
     ) {
         return CompletableFuture.supplyAsync(() -> {
@@ -74,10 +77,13 @@ class ClaudeDaemonRequestExecutor {
                         agentPrompt,
                         streaming,
                         disableThinking,
-                        reasoningEffort
+                        reasoningEffort,
+                        ultracode,
+                        projectTrusted
                 );
 
                 boolean hasAttachments = attachments != null && !attachments.isEmpty() && params.has("attachments");
+                params.addProperty("executionScope", callback.executionScope());
                 params.add("env", ClaudeBridgeUtils.buildDaemonEnv(cwd));
 
                 String method = hasAttachments ? "claude.sendWithAttachments" : "claude.send";
@@ -167,18 +173,18 @@ class ClaudeDaemonRequestExecutor {
                 result.finalResult = assistantContent.toString();
                 result.messageCount = result.messages.size();
 
-                if (!hadSendError.get()) {
+                if (wasAborted.get()) {
+                    // Targeted Stop reaches this callback through the original send's
+                    // native cancellation terminal, settling any earlier deferred error.
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    log.info("[DaemonExecutor] Request was aborted by user (elapsed: " + elapsed + "ms)");
+                    result.success = false;
+                    result.error = "User interrupted";
+                    result.cancelled = true;
+                    callback.onComplete(result);
+                } else if (!hadSendError.get()) {
                     result.success = success != null && success;
                     if (result.success) {
-                        callback.onComplete(result);
-                    } else if (wasAborted.get()) {
-                        // User manually aborted — treat as graceful completion, not an error.
-                        // This matches how Codex handles interruptions (callback.onComplete with
-                        // success=false instead of callback.onError), so the UI does not show
-                        // an error message or toast notification.
-                        long elapsed = System.currentTimeMillis() - startTime;
-                        log.info("[DaemonExecutor] Request was aborted by user (elapsed: " + elapsed + "ms)");
-                        result.error = "User interrupted";
                         callback.onComplete(result);
                     } else {
                         String errorMsg = "Daemon command failed";
@@ -197,12 +203,12 @@ class ClaudeDaemonRequestExecutor {
             } catch (Exception e) {
                 long elapsed = System.currentTimeMillis() - startTime;
                 if (wasAborted.get()) {
-                    // Abort arrived but future was already completed exceptionally by the
-                    // daemon's error output before sendAbort() could complete it normally.
-                    // Treat as graceful interruption, same as the wasAborted branch above.
+                    // A cancellation terminal can race an earlier exceptional completion.
+                    // Preserve its authoritative outcome just as in the normal branch.
                     log.info("[DaemonExecutor] Request was aborted by user (caught exception, elapsed: " + elapsed + "ms)");
                     result.success = false;
                     result.error = "User interrupted";
+                    result.cancelled = true;
                     callback.onComplete(result);
                 } else if (!hadSendError.get()) {
                     result.success = false;
@@ -211,7 +217,7 @@ class ClaudeDaemonRequestExecutor {
                 }
                 return result;
             }
-        }).exceptionally(ex -> {
+        }, ClaudeSDKBridge.claudeExecutor()).exceptionally(ex -> {
             SDKResult errorResult = new SDKResult();
             errorResult.success = false;
             errorResult.error = outputExtractor.extractErrorMessage(ex);

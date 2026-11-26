@@ -1,6 +1,6 @@
 package com.github.claudecodegui.session;
 
-import com.github.claudecodegui.handler.SettingsHandler;
+import com.github.claudecodegui.handler.provider.ModelProviderHandler;
 import com.github.claudecodegui.notifications.ClaudeNotifier;
 import com.github.claudecodegui.provider.common.SessionHistoryIncompleteException;
 import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
@@ -18,7 +18,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 /**
  * Owns session-history loading and post-send message reconciliation.
@@ -28,8 +33,29 @@ public class SessionMessageOrchestrator {
     private static final Logger LOG = Logger.getInstance(SessionMessageOrchestrator.class);
     private static final int MAX_UUID_SYNC_RETRIES = 3;
 
+    /**
+     * Delay before retrying a Claude reload that the live-narrative guard
+     * rejected because the transcript on disk had not caught up yet.
+     */
+    private static final long LIVE_NARRATIVE_RETRY_DELAY_MS = 1500;
+
+    /**
+     * Bound on automatic retries for one outward load request, so a writer that
+     * never catches up cannot keep re-reading the transcript.
+     */
+    private static final int LIVE_NARRATIVE_MAX_RETRIES = 2;
+
     public interface SessionHistoryAccess {
         List<JsonObject> getProviderSessionMessages(String provider, String sessionId, String cwd);
+
+        default List<JsonObject> getProviderSessionMessages(
+                String provider,
+                String sessionId,
+                String cwd,
+                BooleanSupplier cancellation
+        ) {
+            return getProviderSessionMessages(provider, sessionId, cwd);
+        }
 
         JsonObject getLatestClaudeUserMessage(String sessionId, String cwd);
 
@@ -41,6 +67,114 @@ public class SessionMessageOrchestrator {
         default JsonObject getProviderSessionMessagesPage(String sessionId, String cwd, Integer beforeTurn, int limit) {
             return null;
         }
+
+        default JsonObject getProviderSessionMessagesPage(
+                String sessionId,
+                String cwd,
+                Integer beforeTurn,
+                int limit,
+                BooleanSupplier cancellation
+        ) {
+            return getProviderSessionMessagesPage(sessionId, cwd, beforeTurn, limit);
+        }
+    }
+
+    @FunctionalInterface
+    public interface HistoryLoadCancellation {
+        boolean isCancelled();
+
+        /**
+         * Runs the final state mutation only while this request still owns the load generation.
+         * Stateful request implementations override this method to serialize cancellation and commit.
+         */
+        default boolean commitIfActive(Runnable mutation) {
+            if (isCancelled()) {
+                return false;
+            }
+            mutation.run();
+            return true;
+        }
+    }
+
+    /** A restore result was deliberately discarded and must remain retryable. */
+    public static final class HistoryLoadNotCommittedException extends IllegalStateException {
+        public HistoryLoadNotCommittedException() {
+            super("History changed while loading; retry after current work completes");
+        }
+    }
+
+    private static void requireRestoreCommit(boolean updateSharedLoadingState) {
+        if (!updateSharedLoadingState) {
+            throw new HistoryLoadNotCommittedException();
+        }
+    }
+
+    /**
+     * Whether another retry is still allowed for the current outward load.
+     *
+     * @param attempt attempts already scheduled, 1-based
+     * @return true when the attempt is within the configured bound
+     */
+    static boolean shouldScheduleLiveNarrativeRetry(int attempt) {
+        return attempt <= LIVE_NARRATIVE_MAX_RETRIES;
+    }
+
+    /**
+     * Whether a scheduled retry may run now.
+     *
+     * @param currentSessionId   session currently displayed
+     * @param requestedSessionId session the retry belongs to
+     * @param busy               whether a turn is in flight
+     * @param loading            whether a history load is in flight
+     * @return true when the retry targets the displayed session and nothing else is running
+     */
+    static boolean shouldRunLiveNarrativeRetry(String currentSessionId, String requestedSessionId,
+                                               boolean busy, boolean loading) {
+        return requestedSessionId != null
+                && Objects.equals(currentSessionId, requestedSessionId)
+                && !busy
+                && !loading;
+    }
+
+    /**
+     * Retry a reload once the CLI has had time to flush the follow-up turn to
+     * JSONL.
+     *
+     * <p>The live-narrative guard is right to reject a transcript that does not
+     * cover what is already on screen, but a rejection used to end the reload
+     * for good. The frontend can drop a live inter-turn event (streaming or
+     * session-switch guards), and this reload is its only fallback, so retry a
+     * bounded number of times and let the fallback heal itself.</p>
+     *
+     * @param requestedSessionId session whose reload was rejected
+     */
+    private void scheduleLiveNarrativeRetry(String requestedSessionId) {
+        int attempt = liveNarrativeRetryAttempt.incrementAndGet();
+        if (!shouldScheduleLiveNarrativeRetry(attempt)) {
+            LOG.info("[History] Giving up on live-narrative reload retry for sessionId=" + requestedSessionId);
+            return;
+        }
+        LOG.info("[History] Scheduling live-narrative reload retry " + attempt
+                + " in " + LIVE_NARRATIVE_RETRY_DELAY_MS + "ms for sessionId=" + requestedSessionId);
+        CompletableFuture.delayedExecutor(LIVE_NARRATIVE_RETRY_DELAY_MS, TimeUnit.MILLISECONDS)
+                .execute(() -> retryLiveNarrativeLoad(requestedSessionId));
+    }
+
+    /**
+     * Run a scheduled live-narrative retry when the session is still idle.
+     *
+     * @param requestedSessionId session the retry belongs to
+     */
+    private void retryLiveNarrativeLoad(String requestedSessionId) {
+        if (!shouldRunLiveNarrativeRetry(state.getSessionId(), requestedSessionId,
+                state.isBusy(), state.isLoading())) {
+            // The user moved on, or a newer turn/load is in flight. Its own
+            // completion (or the next session_updated) can recover; do not
+            // stack another load on top.
+            LOG.info("[History] Skipping live-narrative reload retry; session changed or busy");
+            return;
+        }
+        loadFromServer(() -> false, true, true);
     }
 
     @FunctionalInterface
@@ -55,6 +189,8 @@ public class SessionMessageOrchestrator {
     private final UsageDisplay usageDisplay;
     private final long initialUuidSyncDelayMs;
     private final long uuidRetryDelayMs;
+    /** Retry attempts for the current outward load; reset by every non-retry entry. */
+    private final AtomicInteger liveNarrativeRetryAttempt = new AtomicInteger();
 
     // Claude history pagination state
     private volatile int claudeHistoryFromTurn = 0;
@@ -68,6 +204,8 @@ public class SessionMessageOrchestrator {
      * provides visibility and atomicity — do not read or write it outside that lock.
      */
     private long claudeHistoryVersion;
+    /** Accepted transcript replacements, so callers can tell a committed load from a discarded one. */
+    private final AtomicLong committedHistoryLoads = new AtomicLong();
 
     public SessionMessageOrchestrator(
             Project project,
@@ -175,8 +313,35 @@ public class SessionMessageOrchestrator {
         }
     }
 
+    /** Number of history loads whose transcript replaced the live list. */
+    public long getCommittedHistoryLoadCount() {
+        return committedHistoryLoads.get();
+    }
+
     /** Load provider history without letting obsolete reads replace a newer transcript. */
     public CompletableFuture<Void> loadFromServer() {
+        return loadFromServer(() -> false, true);
+    }
+
+    /**
+     * Load history for an automatic startup restore. Cancellation is checked around provider I/O,
+     * parsing and the final state commit so stale restore work cannot replace a newer transcript.
+     */
+    public CompletableFuture<Void> loadFromServer(HistoryLoadCancellation cancellation) {
+        return loadFromServer(cancellation, false);
+    }
+
+    private CompletableFuture<Void> loadFromServer(HistoryLoadCancellation cancellation,
+                                                    boolean updateSharedLoadingState) {
+        return loadFromServer(cancellation, updateSharedLoadingState, false);
+    }
+
+    private CompletableFuture<Void> loadFromServer(HistoryLoadCancellation cancellation,
+                                                    boolean updateSharedLoadingState,
+                                                    boolean retry) {
+        if (!retry) {
+            liveNarrativeRetryAttempt.set(0);
+        }
         String requestedSessionId = state.getSessionId();
         if (requestedSessionId == null) {
             return CompletableFuture.completedFuture(null);
@@ -186,27 +351,37 @@ public class SessionMessageOrchestrator {
         Object loadingToken = new Object();
         List<ClaudeSession.Message> messagesBeforeLoad;
         synchronized (state.getMessageStateLock()) {
+            if (!updateSharedLoadingState && state.isLoading()) {
+                return CompletableFuture.failedFuture(new HistoryLoadNotCommittedException());
+            }
             messagesBeforeLoad = state.getMessages();
-            state.claimLoading(loadingToken);
-            callbackFacade.notifyStateChange(state.isBusy(), state.isLoading(), state.getError());
+            if (updateSharedLoadingState) {
+                state.claimLoading(loadingToken);
+                callbackFacade.notifyStateChange(state.isBusy(), state.isLoading(), state.getError());
+            }
         }
 
         return CompletableFuture.runAsync(() -> {
             try {
+                checkHistoryLoadCancellation(cancellation);
                 LOG.info("Loading session from server: sessionId=" + requestedSessionId + ", cwd=" + requestedCwd);
 
                 List<JsonObject> serverMessages;
                 boolean pagedClaudeLoad;
                 ClaudeHistoryLoad historyLoad = null;
                 if ("claude".equals(requestedProvider)) {
-                    historyLoad = this.loadClaudeSessionWithPagination(requestedSessionId, requestedCwd);
+                    historyLoad = loadClaudeSessionWithPagination(
+                            requestedSessionId, requestedCwd, cancellation, !updateSharedLoadingState);
                     serverMessages = historyLoad.messages;
                     pagedClaudeLoad = historyLoad.paged;
                 } else {
-                    serverMessages = historyAccess.getProviderSessionMessages(
-                            requestedProvider, requestedSessionId, requestedCwd);
+                    serverMessages = updateSharedLoadingState
+                            ? historyAccess.getProviderSessionMessages(requestedProvider, requestedSessionId, requestedCwd)
+                            : historyAccess.getProviderSessionMessages(
+                                    requestedProvider, requestedSessionId, requestedCwd, cancellation::isCancelled);
                     pagedClaudeLoad = false;
                 }
+                checkHistoryLoadCancellation(cancellation);
                 if (serverMessages == null) {
                     throw new IllegalStateException("Session history provider returned no response");
                 }
@@ -214,21 +389,24 @@ public class SessionMessageOrchestrator {
                 LOG.debug("Received " + serverMessages.size() + " messages from server");
                 List<ClaudeSession.Message> loadedMessages = new ArrayList<>(serverMessages.size());
                 for (JsonObject msg : serverMessages) {
+                    checkHistoryLoadCancellation(cancellation);
                     ClaudeSession.Message message = messageParser.parseServerMessage(msg);
                     if (message != null) {
                         loadedMessages.add(message);
                     }
                 }
 
-                List<ClaudeSession.Message> callbackMessages;
                 // Measure the freshly parsed history before taking the state lock:
                 // the list is thread-local to this load, so its structural walk must
                 // not extend the lock window that streaming callbacks contend on.
                 Set<String> loadedStructure = MessageStructure.structuralBlockKeys(loadedMessages);
                 boolean keptOlderLivePrefix = false;
+                checkHistoryLoadCancellation(cancellation);
                 synchronized (state.getMessageStateLock()) {
-                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider)) {
+                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
+                            updateSharedLoadingState)) {
                         LOG.info("Ignoring history result for a session that changed while loading");
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
                     // Safety checks must see buffered stream deltas before replacement materializes them.
@@ -236,6 +414,7 @@ public class SessionMessageOrchestrator {
                     // A new row added during this read belongs to newer live work.
                     // Metadata patches keep the same row identities and remain valid.
                     if (!currentMessages.equals(messagesBeforeLoad)) {
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
                     // The anchor walk backs every Claude guard below; run it once per commit.
@@ -245,6 +424,8 @@ public class SessionMessageOrchestrator {
                     if ("claude".equals(requestedProvider)
                             && !historyKeepsLiveNarrative(loadedMessages, currentMessages, alignedAnchorIndex)) {
                         LOG.warn("Ignoring history result that has not persisted the live narrative");
+                        scheduleLiveNarrativeRetry(requestedSessionId);
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
                     // A page load only carries the newest turns, so a transcript that
@@ -260,6 +441,7 @@ public class SessionMessageOrchestrator {
                         if (!"codex".equals(requestedProvider) && !MessageStructure.structuralBlockKeys(mergedMessages)
                                 .containsAll(MessageStructure.structuralBlockKeys(currentMessages))) {
                             LOG.warn("Ignoring history page that would remove live structural blocks");
+                            requireRestoreCommit(updateSharedLoadingState);
                             return;
                         }
                         keptOlderLivePrefix = pagedClaudeLoad && alignedAnchorIndex > 0;
@@ -269,10 +451,12 @@ public class SessionMessageOrchestrator {
                         if (liveHistoryBacked > 0 && loadedMessages.size() < liveHistoryBacked) {
                             LOG.warn("Ignoring stale shorter history result: loaded="
                                     + loadedMessages.size() + ", live=" + liveHistoryBacked);
+                            requireRestoreCommit(updateSharedLoadingState);
                             return;
                         }
                         if (!historyPreservesCurrentStructure(loadedStructure, currentMessages)) {
                             LOG.warn("Ignoring history result that would remove live structural blocks");
+                            requireRestoreCommit(updateSharedLoadingState);
                             return;
                         }
                     }
@@ -280,45 +464,63 @@ public class SessionMessageOrchestrator {
                     // Replace only after the complete response has been parsed and all
                     // ownership checks pass. A failed or partial read must never clear
                     // the live list first and leave the UI with a shorter transcript.
-                    this.state.replaceMessages(loadedMessages);
-                    this.state.setError(null);
-                    if (historyLoad != null) {
-                        this.claudeHistoryVersion++;
-                        // The cursor belongs to the accepted transcript. Rejected or obsolete
-                        // reads must not move it past messages that are still on screen.
-                        if (!keptOlderLivePrefix) {
-                            this.claudeHistoryFromTurn = historyLoad.fromTurn;
+                    List<ClaudeSession.Message> committedMessages = loadedMessages;
+                    List<JsonObject> committedServerMessages = serverMessages;
+                    boolean committedKeptOlderLivePrefix = keptOlderLivePrefix;
+                    ClaudeHistoryLoad committedHistoryLoad = historyLoad;
+                    boolean committed = cancellation.commitIfActive(() -> {
+                        state.replaceMessages(committedMessages);
+                        state.setError(null);
+                        if (committedHistoryLoad != null) {
+                            claudeHistoryVersion++;
+                            // Publish the cursor only after this transcript is accepted.
+                            if (!committedKeptOlderLivePrefix) {
+                                claudeHistoryFromTurn = committedHistoryLoad.fromTurn;
+                            }
+                            claudeHistoryTotalTurns = committedHistoryLoad.totalTurns;
+                            claudeHistoryHasMore = committedHistoryLoad.hasMore && claudeHistoryFromTurn > 0;
+                            claudeHistorySessionTitle = committedHistoryLoad.sessionTitle;
+                            callbackFacade.notifyClaudeHistoryPageInfo(
+                                    requestedSessionId,
+                                    claudeHistoryFromTurn,
+                                    claudeHistoryTotalTurns,
+                                    claudeHistoryHasMore,
+                                    committedHistoryLoad.cursorReset || !pagedClaudeLoad,
+                                    claudeHistorySessionTitle);
                         }
-                        this.claudeHistoryTotalTurns = historyLoad.totalTurns;
-                        this.claudeHistoryHasMore = historyLoad.hasMore && this.claudeHistoryFromTurn > 0;
-                        this.claudeHistorySessionTitle = historyLoad.sessionTitle;
-                        // A full fallback retires the frontend's old cursor too, or scrolling
-                        // would prepend already-loaded turns into the complete transcript.
-                        this.callbackFacade.notifyClaudeHistoryPageInfo(
-                                requestedSessionId,
-                                this.claudeHistoryFromTurn,
-                                this.claudeHistoryTotalTurns,
-                                this.claudeHistoryHasMore,
-                                historyLoad.cursorReset || !pagedClaudeLoad,
-                                this.claudeHistorySessionTitle);
+                        restoreTokenUsage(committedServerMessages);
+                        committedHistoryLoads.incrementAndGet();
+                        callbackFacade.notifyMessageUpdate(state.getMessagesSnapshot());
+                    });
+                    if (!committed) {
+                        throw new CancellationException("History loading was cancelled before commit");
                     }
-                    callbackMessages = this.state.getMessagesSnapshot();
-                    this.restoreTokenUsage(serverMessages);
-                    this.callbackFacade.notifyMessageUpdate(callbackMessages);
                 }
             } catch (SessionHistoryNotFoundException e) {
+                checkHistoryLoadCancellation(cancellation);
                 // A missing history file is an explicit stale-session signal, so unlike
                 // the stale-result guards above it clears the live transcript.
                 synchronized (state.getMessageStateLock()) {
-                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider)) {
+                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
+                            updateSharedLoadingState)) {
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
-                    this.retireMissingHistory();
+                    boolean committed = cancellation.commitIfActive(this::retireMissingHistory);
+                    if (!committed) {
+                        throw new CancellationException("History loading was cancelled before commit");
+                    }
                 }
                 LOG.warn("Session history is unavailable; cleared stale session ID: " + e.getMessage());
             } catch (SessionHistoryIncompleteException e) {
+                checkHistoryLoadCancellation(cancellation);
+                if (!updateSharedLoadingState) {
+                    throw new CompletionException(e);
+                }
                 synchronized (state.getMessageStateLock()) {
-                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider)) {
+                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
+                            updateSharedLoadingState)) {
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
                     // An initial history open has no live transcript to keep. Let
@@ -329,18 +531,26 @@ public class SessionMessageOrchestrator {
                 }
                 LOG.info("Session history is still being written; keeping the live transcript: "
                         + e.getMessage());
+            } catch (HistoryLoadNotCommittedException e) {
+                throw new CompletionException(e);
+            } catch (CancellationException e) {
+                throw new CompletionException(e);
             } catch (Exception e) {
                 synchronized (state.getMessageStateLock()) {
-                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider)) {
+                    if (!ownsHistoryLoad(loadingToken, requestedSessionId, requestedCwd, requestedProvider,
+                            updateSharedLoadingState)) {
+                        requireRestoreCommit(updateSharedLoadingState);
                         return;
                     }
-                    state.setError(e.getMessage());
+                    if (updateSharedLoadingState) {
+                        state.setError(e.getMessage());
+                    }
                 }
                 LOG.error("Error loading session: " + e.getMessage(), e);
                 throw new CompletionException(e);
             } finally {
                 synchronized (state.getMessageStateLock()) {
-                    if (state.releaseLoading(loadingToken)) {
+                    if (state.releaseLoading(loadingToken) && updateSharedLoadingState) {
                         callbackFacade.notifyStateChange(state.isBusy(), state.isLoading(), state.getError());
                     }
                 }
@@ -399,14 +609,23 @@ public class SessionMessageOrchestrator {
      * fails or returns invalid data, so a broken cursor never leaves the
      * user with an empty chat.
      */
-    private ClaudeHistoryLoad loadClaudeSessionWithPagination(String sessionId, String cwd) {
+    private ClaudeHistoryLoad loadClaudeSessionWithPagination(
+            String sessionId,
+            String cwd,
+            HistoryLoadCancellation cancellation,
+            boolean cancellableRestore
+    ) {
         // Try the paginated path first: latest page only, then prepend earlier
         // pages as the user scrolls up.
         try {
-            JsonObject page = historyAccess.getProviderSessionMessagesPage(sessionId, cwd, null, 30);
+            JsonObject page = cancellableRestore
+                    ? historyAccess.getProviderSessionMessagesPage(sessionId, cwd, null, 30, cancellation::isCancelled)
+                    : historyAccess.getProviderSessionMessagesPage(sessionId, cwd, null, 30);
+            checkHistoryLoadCancellation(cancellation);
             if (page != null && page.has("success") && page.get("success").getAsBoolean()) {
                 List<JsonObject> messages = new ArrayList<>();
                 for (JsonElement msg : requireClaudeHistoryMessages(page)) {
+                    checkHistoryLoadCancellation(cancellation);
                     messages.add(msg.getAsJsonObject());
                 }
                 ClaudeHistoryLoad load = new ClaudeHistoryLoad(messages, page);
@@ -417,6 +636,8 @@ public class SessionMessageOrchestrator {
                         + ", hasMore=" + load.hasMore);
                 return load;
             }
+        } catch (CancellationException e) {
+            throw e;
         } catch (SessionHistoryNotFoundException e) {
             // A missing transcript is a stale-session signal, not a page
             // failure: rethrow so the caller clears the session ID instead of
@@ -427,10 +648,13 @@ public class SessionMessageOrchestrator {
             LOG.warn("Paginated session load failed, falling back to full history: " + e.getMessage());
         }
 
+        checkHistoryLoadCancellation(cancellation);
         // Fallback: full history load (legacy behavior)
         LOG.info("Using full-history fallback for Claude session: " + sessionId);
         return new ClaudeHistoryLoad(
-                this.historyAccess.getProviderSessionMessages("claude", sessionId, cwd), null);
+                cancellableRestore
+                        ? historyAccess.getProviderSessionMessages("claude", sessionId, cwd, cancellation::isCancelled)
+                        : historyAccess.getProviderSessionMessages("claude", sessionId, cwd), null);
     }
 
     /**
@@ -892,8 +1116,9 @@ public class SessionMessageOrchestrator {
                 : null;
     }
 
-    private boolean ownsHistoryLoad(Object token, String sessionId, String cwd, String provider) {
-        return state.ownsLoading(token)
+    private boolean ownsHistoryLoad(Object token, String sessionId, String cwd, String provider,
+                                    boolean updateSharedLoadingState) {
+        return (updateSharedLoadingState ? state.ownsLoading(token) : !state.isLoading())
                 && Objects.equals(sessionId, state.getSessionId())
                 && Objects.equals(cwd, state.getCwd())
                 && Objects.equals(provider, state.getProvider());
@@ -908,6 +1133,12 @@ public class SessionMessageOrchestrator {
             List<ClaudeSession.Message> currentMessages
     ) {
         return loadedStructure.containsAll(MessageStructure.structuralBlockKeys(currentMessages));
+    }
+
+    private void checkHistoryLoadCancellation(HistoryLoadCancellation cancellation) {
+        if (cancellation.isCancelled()) {
+            throw new CancellationException("History loading was cancelled");
+        }
     }
 
     /**
@@ -1036,8 +1267,8 @@ public class SessionMessageOrchestrator {
             }
 
             int usedTokens = TokenUsageUtils.extractContextTokens(lastUsage, state.getProvider());
-            int fallbackMaxTokens = SettingsHandler.getModelContextLimit(
-                    state.getProvider(), state.getModel());
+            int fallbackMaxTokens = ModelProviderHandler.resolveContextLimit(
+                    state.getProvider(), state.getModel(), state.getCwd(), state.getRuntimeSupplierId(state.getProvider()));
             int maxTokens = TokenUsageUtils.extractMaxTokens(lastUsage, fallbackMaxTokens);
             usageDisplay.show(usedTokens, maxTokens);
             LOG.debug("Restored token usage from history: " + usedTokens + " / " + maxTokens);

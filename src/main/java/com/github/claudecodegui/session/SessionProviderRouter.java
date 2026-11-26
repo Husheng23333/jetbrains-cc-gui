@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 /**
  * Centralizes provider-specific bridge routing for session operations.
@@ -23,7 +24,7 @@ public class SessionProviderRouter {
      * {@link MarkerCliBridge} — the keys of the map built by
      * {@link #registerCliBridges(MarkerCliBridge...)} for the bundled bridges.
      */
-    private static final Set<String> CLI_PROVIDER_IDS = Set.of("kimi", "opencode", "pi", "omp", "dsh", "minimax");
+    private static final Set<String> CLI_PROVIDER_IDS = Set.of("kimi", "opencode", "pi", "omp", "dsh", "gemini", "minimax");
 
     /**
      * Whether {@code provider} is a headless CLI provider routed through the
@@ -127,6 +128,14 @@ public class SessionProviderRouter {
         claudeSDKBridge.interruptChannel(channelId);
     }
 
+    public void interruptChannel(String provider, String channelId, String sessionId, String runtimeSessionEpoch) {
+        if ("claude".equals(provider)) {
+            claudeSDKBridge.interruptChannel(channelId, sessionId, runtimeSessionEpoch);
+        } else {
+            interruptChannel(provider, channelId);
+        }
+    }
+
     public List<JsonObject> getSessionMessages(String provider, String sessionId, String cwd) {
         return this.getSessionMessages(provider, sessionId, cwd, null);
     }
@@ -147,6 +156,29 @@ public class SessionProviderRouter {
             return bridge.getSessionMessages(sessionId, cwd);
         }
         return claudeSDKBridge.getSessionMessages(sessionId, cwd);
+    }
+
+    public List<JsonObject> getSessionMessages(
+            String provider,
+            String sessionId,
+            String cwd,
+            String channelId,
+            BooleanSupplier cancellation
+    ) {
+        if ("codex".equals(provider)) {
+            return codexSDKBridge.getSessionMessages(sessionId, cwd, channelId, cancellation);
+        }
+        if ("grok".equals(provider) && grokSDKBridge != null) {
+            return grokSDKBridge.getSessionMessages(sessionId, cwd, cancellation);
+        }
+        if ("zcode".equals(provider) && zcodeSDKBridge != null) {
+            return zcodeSDKBridge.getSessionMessages(sessionId, cwd, cancellation);
+        }
+        MarkerCliBridge bridge = cli(provider);
+        if (bridge != null) {
+            return bridge.getSessionMessages(sessionId, cwd, cancellation);
+        }
+        return claudeSDKBridge.getSessionMessages(sessionId, cwd, cancellation);
     }
 
     public Map<String, MarkerCliBridge> getCliBridges() {

@@ -12,11 +12,31 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Regression tests for ProviderManager.
  */
 public class ProviderManagerTest {
+    @Test
+    public void thinkingChangeKeepsTheDefaultAndOtherSupplierCredentials() throws Exception {
+        JsonObject config = createConfigWithCurrent("a");
+        JsonObject providers = config.getAsJsonObject("claude").getAsJsonObject("providers");
+        providers.add("a", createProvider("A"));
+        JsonObject b = createProvider("B");
+        JsonObject env = new JsonObject();
+        env.addProperty("ANTHROPIC_AUTH_TOKEN", "fixture-key");
+        b.getAsJsonObject("settingsConfig").add("env", env);
+        providers.add("b", b);
+        AtomicReference<JsonObject> reference = new AtomicReference<>(config);
+        ProviderManager manager = createProviderManager(reference);
+        org.junit.Assert.assertTrue(manager.setAlwaysThinkingEnabledInProvider("b", false));
+        assertEquals("a", reference.get().getAsJsonObject("claude").get("current").getAsString());
+        JsonObject updated = reference.get().getAsJsonObject("claude").getAsJsonObject("providers").getAsJsonObject("b").getAsJsonObject("settingsConfig");
+        assertEquals("fixture-key", updated.getAsJsonObject("env").get("ANTHROPIC_AUTH_TOKEN").getAsString());
+        assertFalse(updated.get("alwaysThinkingEnabled").getAsBoolean());
+        assertFalse(manager.setAlwaysThinkingEnabledInProvider("missing", true));
+    }
     /**
      * When current is blank and there are no saved providers, Claude should remain inactive.
      */
@@ -151,6 +171,36 @@ public class ProviderManagerTest {
         boolean changed = manager.repairActiveProviderToClaudeSettings();
 
         assertFalse("Provider with empty env payload must skip repair", changed);
+    }
+
+    private ProviderManager managerWithActiveProviderAndSettings(String current, String settingsJson) {
+        JsonObject config = createConfigWithCurrent(current);
+        JsonObject provider = createProvider("Provider A");
+        JsonObject env = new JsonObject();
+        env.addProperty("ANTHROPIC_AUTH_TOKEN", "provider-token");
+        provider.getAsJsonObject("settingsConfig").add("env", env);
+        config.getAsJsonObject("claude").getAsJsonObject("providers").add("provider-a", provider);
+        return createProviderManager(new AtomicReference<>(config), JsonParser.parseString(settingsJson).getAsJsonObject());
+    }
+
+    /**
+     * A directory whose settings.json holds a base URL the plugin did not write keeps it, and the
+     * caller is told so it can say why.
+     */
+    @Test
+    public void configDirectoryWithItsOwnApiSettingsIsReportedAndLeftAlone() throws Exception {
+        ProviderManager manager = managerWithActiveProviderAndSettings("provider-a",
+                "{\"env\":{\"ANTHROPIC_BASE_URL\":\"https://user-proxy.example.invalid\"}}");
+
+        assertTrue(manager.applyActiveProviderToConfigDirectory());
+    }
+
+    @Test
+    public void configDirectoryIsNotReportedWhenNoProviderWouldBeApplied() throws Exception {
+        ProviderManager manager = managerWithActiveProviderAndSettings(ProviderManager.LOCAL_SETTINGS_PROVIDER_ID,
+                "{\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"user-token\"}}");
+
+        assertFalse(manager.applyActiveProviderToConfigDirectory());
     }
 
     /**

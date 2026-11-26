@@ -1,11 +1,68 @@
 import { act, renderHook } from '@testing-library/react';
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { useMessageQueue } from './useMessageQueue';
+import type { QueuedMessage } from './useMessageQueue';
 import type { Attachment } from '../components/ChatInputBox/types';
+import {
+  expandQuoteTokens,
+  makeQuoteToken,
+  pruneQuoteRegistry,
+  registerQuote,
+} from '../components/ChatInputBox/utils/quoteRegistry';
 
 describe('useMessageQueue', () => {
+  it('retains the full queued item when dispatch refuses it, and retries only after readiness changes', () => {
+    const attachment: Attachment = { id: 'held', fileName: 'held.txt', mediaType: 'text/plain', data: 'aGk=' };
+    const onExecute = vi.fn(() => 'blocked' as 'blocked' | 'started');
+    const { result, rerender } = renderHook(({ ready }) => useMessageQueue({
+      isLoading: false, onExecute, retryKey: ready,
+    }), { initialProps: { ready: false } });
+    act(() => result.current.enqueue('must survive', [attachment]));
+    const held = result.current.queue[0];
+    expect(held).toMatchObject({ content: 'must survive', attachments: [attachment] });
+    expect(onExecute).toHaveBeenCalledTimes(1);
+    rerender({ ready: false });
+    expect(onExecute).toHaveBeenCalledTimes(1);
+    onExecute.mockReturnValue('started');
+    rerender({ ready: true });
+    expect(onExecute).toHaveBeenCalledTimes(2);
+    expect(result.current.queue).toEqual([]);
+  });
+
+  it('keeps refused quoted text editable without losing order or quote contents', () => {
+    const onExecute = vi.fn(() => 'blocked' as const);
+    const { result } = renderHook(() => useMessageQueue({ isLoading: false, onExecute }));
+    const quoteId = registerQuote('the complete quoted source');
+    const content = `inspect ${makeQuoteToken(quoteId)}`;
+    act(() => { result.current.enqueue(content); result.current.enqueue('second'); });
+    pruneQuoteRegistry(new Set());
+    let edited: QueuedMessage | undefined;
+    act(() => { edited = result.current.dequeueForEdit(result.current.queue[0].id); });
+    expect(edited?.content).toBe(content);
+    expect(edited?.quotes).toBeDefined();
+    expect(result.current.queue.map(item => item.content)).toEqual(['second']);
+  });
+
+  it('drains locally handled commands without waiting for a model turn', () => {
+    const onExecute = vi.fn((_content: string) => 'handled' as const);
+    const { result } = renderHook(() => useMessageQueue({ isLoading: false, onExecute }));
+    act(() => { result.current.enqueue('/plugins'); result.current.enqueue('/context'); });
+    expect(onExecute.mock.calls.map(([content]) => content)).toEqual(['/plugins', '/context']);
+    expect(result.current.queue).toEqual([]);
+  });
+
+  it('does not resurrect or drop queue changes made by an accepted callback', () => {
+    let clearAndEnqueue: () => void = () => {};
+    const onExecute = vi.fn(() => { clearAndEnqueue(); return 'started' as const; });
+    const { result } = renderHook(() => useMessageQueue({ isLoading: false, onExecute }));
+    clearAndEnqueue = () => { result.current.clearQueue(); result.current.enqueue('new session work'); };
+    act(() => { result.current.enqueue('old first'); result.current.enqueue('old second'); });
+    expect(result.current.queue.map(item => item.content)).toEqual(['new session work']);
+    expect(onExecute).toHaveBeenCalledOnce();
+  });
+
   const renderQueue = (initialLoading: boolean) => {
-    const onExecute = vi.fn();
+    const onExecute = vi.fn((_content: string, _attachments?: Attachment[]) => 'started' as const);
     const hook = renderHook(() => {
       // Drive `isLoading` through real component state so the auto-execute
       // path sees the same setState semantics as production, where
@@ -16,6 +73,7 @@ describe('useMessageQueue', () => {
         onExecute: (content: string, attachments?: Attachment[]) => {
           onExecute(content, attachments);
           setLoading(true);
+          return 'started';
         },
       });
       return { queueApi, setLoading };
@@ -179,7 +237,7 @@ describe('useMessageQueue', () => {
   });
 
   it('dispatches at most one message per idle period until loading flips', () => {
-    const onExecute = vi.fn();
+    const onExecute = vi.fn((_content: string, _attachments?: Attachment[]) => 'started' as const);
     const hook = renderHook(() => useMessageQueue({ isLoading: false, onExecute }));
 
     act(() => {
@@ -196,7 +254,7 @@ describe('useMessageQueue', () => {
   });
 
   it('reopens the single-flight gate through a loading cycle', () => {
-    const onExecute = vi.fn();
+    const onExecute = vi.fn((_content: string, _attachments?: Attachment[]) => 'started' as const);
     const hook = renderHook(() => {
       const [loading, setLoading] = useState(false);
       const queueApi = useMessageQueue({ isLoading: loading, onExecute });
@@ -223,5 +281,154 @@ describe('useMessageQueue', () => {
     });
     expect(onExecute).toHaveBeenCalledTimes(2);
     expect(onExecute).toHaveBeenLastCalledWith('next round', undefined);
+  });
+
+  it('dequeueForEdit removes the message and returns its content and attachments', () => {
+    const { result } = renderQueue(true);
+    const attachment: Attachment = { id: 'att-1', fileName: 'notes.txt', mediaType: 'text/plain', data: 'aGk=' };
+
+    act(() => {
+      result.current.queueApi.enqueue('first');
+      result.current.queueApi.enqueue('edit me', [attachment]);
+      result.current.queueApi.enqueue('third');
+    });
+
+    const target = result.current.queueApi.queue[1];
+    let removed: QueuedMessage | undefined;
+    act(() => {
+      removed = result.current.queueApi.dequeueForEdit(target.id);
+    });
+
+    expect(removed).toMatchObject({ content: 'edit me', attachments: [attachment] });
+    expect(result.current.queueApi.queue.map(m => m.content)).toEqual(['first', 'third']);
+    expect(result.current.queueApi.hasQueuedMessages).toBe(true);
+  });
+
+  it('dequeueForEdit ignores unknown ids and leaves the queue untouched', () => {
+    const { result } = renderQueue(true);
+
+    act(() => {
+      result.current.queueApi.enqueue('only');
+    });
+
+    let removed: QueuedMessage | undefined;
+    act(() => {
+      removed = result.current.queueApi.dequeueForEdit('unknown-id');
+    });
+
+    expect(removed).toBeUndefined();
+    expect(result.current.queueApi.queue.map(m => m.content)).toEqual(['only']);
+  });
+
+  it('dequeueForEdit sees the order applied by reorder', () => {
+    const { result } = renderQueue(true);
+
+    let removed: QueuedMessage | undefined;
+    act(() => {
+      result.current.queueApi.enqueue('first');
+      result.current.queueApi.enqueue('second');
+    });
+    const [a, b] = result.current.queueApi.queue;
+    act(() => {
+      result.current.queueApi.reorder([b.id, a.id]);
+      removed = result.current.queueApi.dequeueForEdit(b.id);
+    });
+
+    expect(removed).toMatchObject({ content: 'second' });
+    expect(result.current.queueApi.queue.map(m => m.content)).toEqual(['first']);
+  });
+
+  it('peekQueuedMessage does not remove and reports unknown ids', () => {
+    const { result } = renderQueue(true);
+
+    let peeked: QueuedMessage | undefined;
+    act(() => {
+      result.current.queueApi.enqueue('stays');
+      peeked = result.current.queueApi.peekQueuedMessage('unknown-id');
+    });
+
+    expect(peeked).toBeUndefined();
+    expect(result.current.queueApi.queue.map(m => m.content)).toEqual(['stays']);
+  });
+
+  it('does not execute a message taken out of the queue for editing', () => {
+    const { result, onExecute } = renderQueue(true);
+
+    act(() => {
+      result.current.queueApi.enqueue('kept for later');
+      result.current.queueApi.enqueue('edit me');
+    });
+    act(() => {
+      result.current.queueApi.dequeueForEdit(result.current.queueApi.queue[1].id);
+    });
+    act(() => {
+      result.current.setLoading(false);
+    });
+
+    expect(onExecute).toHaveBeenCalledExactlyOnceWith('kept for later', undefined);
+  });
+
+  it('never dispatches a message taken for editing just as the turn ended', () => {
+    // A click can land after the idle render commits but before its passive
+    // effects run; a layout effect fires in exactly that window.
+    const onExecute = vi.fn((_content: string, _attachments?: Attachment[]) => 'started' as const);
+    const taken: Array<QueuedMessage | undefined> = [];
+    const { result, rerender } = renderHook(({ isLoading }: { isLoading: boolean }) => {
+      const queueApi = useMessageQueue({ isLoading, onExecute });
+      const { queue, dequeueForEdit } = queueApi;
+      useLayoutEffect(() => {
+        if (!isLoading && taken.length === 0 && queue.length > 0) {
+          taken.push(dequeueForEdit(queue[0].id));
+        }
+      }, [isLoading, queue, dequeueForEdit]);
+      return queueApi;
+    }, { initialProps: { isLoading: true } });
+
+    act(() => {
+      result.current.enqueue('edit me');
+      result.current.enqueue('send me');
+    });
+    rerender({ isLoading: false });
+
+    // The edited message is in the draft now, so sending it too would send it twice.
+    expect(taken.map(message => message?.content)).toEqual(['edit me']);
+    expect(onExecute).toHaveBeenCalledExactlyOnceWith('send me', undefined);
+    expect(result.current.queue).toEqual([]);
+  });
+
+  it('sends the quotes of a queued message even after the input dropped them', () => {
+    const { result, onExecute } = renderQueue(true);
+    const id = registerQuote('quoted line');
+    let sent = '';
+    onExecute.mockImplementation((content: string) => {
+      sent = expandQuoteTokens(content);
+      return 'started';
+    });
+
+    act(() => {
+      result.current.queueApi.enqueue(`see ${makeQuoteToken(id)}`);
+    });
+    // Typing the next message renders the input's tags, which prunes every
+    // quote that is not in the input - including the queued one.
+    pruneQuoteRegistry(new Set());
+    act(() => {
+      result.current.setLoading(false);
+    });
+
+    expect(sent).toBe('see > quoted line\n');
+  });
+
+  it('hands the quote text over with a message taken for editing', () => {
+    const { result } = renderQueue(true);
+    const id = registerQuote('quoted line');
+
+    act(() => {
+      result.current.queueApi.enqueue(`see ${makeQuoteToken(id)}`);
+      result.current.queueApi.enqueue('no quote here');
+    });
+    const [quoted, plain] = result.current.queueApi.queue;
+
+    expect(quoted.quotes).toEqual({ [id]: 'quoted line' });
+    expect(plain).not.toHaveProperty('quotes');
   });
 });

@@ -11,9 +11,11 @@ import com.github.claudecodegui.handler.core.HandlerContext;
 public class ProviderHandler extends BaseMessageHandler {
 
     private static final String[] SUPPORTED_TYPES = {
+            "get_session_suppliers",
+            "set_session_supplier",
+            "provider_backup",
             // Claude provider operations
             "get_providers",
-            "get_current_claude_config",
             "get_thinking_enabled",
             "set_thinking_enabled",
             "add_provider",
@@ -44,6 +46,7 @@ public class ProviderHandler extends BaseMessageHandler {
     private final CodexProviderOperations codexOps;
     private final ProviderImportExportSupport importExportSupport;
     private final ProviderOrderingService orderingService;
+    private final ProviderBackupSupport backupSupport;
 
     public ProviderHandler(HandlerContext context) {
         super(context);
@@ -51,6 +54,7 @@ public class ProviderHandler extends BaseMessageHandler {
         this.codexOps = new CodexProviderOperations(context);
         this.importExportSupport = new ProviderImportExportSupport(context, claudeOps, codexOps);
         this.orderingService = new ProviderOrderingService(context, claudeOps, codexOps);
+        this.backupSupport = new ProviderBackupSupport(context);
     }
 
     @Override
@@ -61,12 +65,16 @@ public class ProviderHandler extends BaseMessageHandler {
     @Override
     public boolean handle(String type, String content) {
         switch (type) {
+            case "get_session_suppliers":
+            case "set_session_supplier":
+                new SessionSupplierOperations(context).handle(content, "set_session_supplier".equals(type));
+                return true;
+            case "provider_backup":
+                backupSupport.handle(content);
+                return true;
             // Claude provider operations
             case "get_providers":
                 claudeOps.handleGetProviders();
-                return true;
-            case "get_current_claude_config":
-                claudeOps.handleGetCurrentClaudeConfig();
                 return true;
             case "get_thinking_enabled":
                 claudeOps.handleGetThinkingEnabled();

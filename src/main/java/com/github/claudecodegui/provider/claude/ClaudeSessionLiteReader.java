@@ -38,6 +38,7 @@ public class ClaudeSessionLiteReader {
         public final int messageCount;
         public final long createdAt;
         public final String entrypoint;
+        public String cwd;
 
         public ClaudeLiteSessionInfo(
                 String sessionId,
@@ -133,6 +134,10 @@ public class ClaudeSessionLiteReader {
         if (summary == null) {
             summary = firstPrompt;
         }
+        String reviewSummary = com.github.claudecodegui.markdown.MarkdownReviewPrompt.displaySummary(summary);
+        if (reviewSummary != null) {
+            summary = reviewSummary;
+        }
 
         // Skip metadata-only sessions (no title, no summary, no prompt)
         if (summary == null || summary.isEmpty()) {
@@ -161,7 +166,7 @@ public class ClaudeSessionLiteReader {
         // Count messages in head (approximation)
         int messageCount = this.liteReader.countMessagesInHead(lite.head);
 
-        return new ClaudeLiteSessionInfo(
+        ClaudeLiteSessionInfo info = new ClaudeLiteSessionInfo(
                 sessionId,
                 summary,
                 lite.mtime,
@@ -172,6 +177,11 @@ public class ClaudeSessionLiteReader {
                 createdAt,
                 entrypoint
         );
+        info.cwd = this.liteReader.extractJsonStringField(lite.head, "cwd");
+        if (info.cwd == null) {
+            info.cwd = this.liteReader.extractJsonStringField(lite.tail, "cwd");
+        }
+        return info;
     }
 
     /**

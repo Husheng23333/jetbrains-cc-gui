@@ -34,6 +34,7 @@ import {
   buildConfigErrorPayload,
   extractResultError
 } from './message-utils.js';
+import { MAX_SEND_ERROR_LENGTH, prependSdkStderr, redactSecrets } from './message-output-filter.js';
 import { createPreToolUseHook } from './permission-mode.js';
 import { loadMcpServersConfigAsRecord } from './mcp-status/config-loader.js';
 import { setActiveQueryResult } from './message-session-registry.js';
@@ -44,7 +45,10 @@ import {
   prepareAssistantSnapshotBlock,
 } from './stream-delta-normalizer.js';
 import { generateSessionTitle } from '../session-title-service.js';
-import { getClaudeCliPathOverride } from '../../utils/claude-cli-path.js';
+import { projectTrustFor, settingSourcesFor } from './project-trust.js';
+import { getClaudeCliPathOverride, claudeCliSdkOptions } from '../../utils/claude-cli-path.js';
+import { buildSessionClaudeConfig, buildSessionClaudeSettingsOverride } from '../../config/session-supplier.js';
+import { createUltracodeQuery, withUltracodeSetting } from './ultracode.js';
 
 // ========== Internal helpers for deduplication ==========
 
@@ -74,16 +78,26 @@ function resolveThinkingConfig(settings) {
 /**
  * Build query options object shared by both send functions.
  */
-function buildQueryOptions({ workingDirectory, permissionMode, sdkModelName, maxThinkingTokens, streamingEnabled, systemPromptAppend, preToolUseHook, sdkStderrLines, mcpServers, modelId, settingsEnv }) {
+function buildQueryOptions({ workingDirectory, permissionMode, sdkModelName, maxThinkingTokens, streamingEnabled, systemPromptAppend, preToolUseHook, sdkStderrLines, mcpServers, modelId, settingsEnv, resolvedModelId, ultracode, childEnv, projectTrusted }) {
   const claudeCliOverride = getClaudeCliPathOverride();
+  const stderr = (data) => {
+    try {
+      const text = (data ?? '').toString().trim();
+      if (text) {
+        sdkStderrLines.push(text);
+        if (sdkStderrLines.length > 50) sdkStderrLines.shift();
+        console.error(`[SDK-STDERR] ${text}`);
+      }
+    } catch (_) { /* ignore */ }
+  };
   return {
     cwd: workingDirectory,
     permissionMode,
     model: sdkModelName,
     maxTurns: 1000,
     enableFileCheckpointing: true,
-    env: buildCliEnv(),
-    settings: buildWebviewControlledSettingsOverride(modelId, settingsEnv),
+    env: childEnv ?? buildCliEnv(),
+    settings: withUltracodeSetting(buildWebviewControlledSettingsOverride(modelId, settingsEnv, resolvedModelId), ultracode),
     ...(maxThinkingTokens !== undefined && { maxThinkingTokens }),
     ...(streamingEnabled && { includePartialMessages: true }),
     additionalDirectories: Array.from(
@@ -91,28 +105,19 @@ function buildQueryOptions({ workingDirectory, permissionMode, sdkModelName, max
     ),
     canUseTool,
     hooks: { PreToolUse: [{ hooks: [preToolUseHook] }] },
-    settingSources: ['user', 'project', 'local'],
+    settingSources: settingSourcesFor(projectTrusted),
     // bypassPermissions requires this flag per SDK contract (sdk.d.ts: "Must be set to
     // true when using permissionMode: 'bypassPermissions'"). Without it a future SDK
     // version could silently drop bypass and change permission behavior.
     ...(permissionMode === 'bypassPermissions' && { allowDangerouslySkipPermissions: true }),
     ...(mcpServers && { mcpServers }),
-    ...(claudeCliOverride && { pathToClaudeCodeExecutable: claudeCliOverride }),
+    ...claudeCliSdkOptions(claudeCliOverride, { stderr }),
     systemPrompt: {
       type: 'preset',
       preset: 'claude_code',
       ...(systemPromptAppend && { append: systemPromptAppend })
     },
-    stderr: (data) => {
-      try {
-        const text = (data ?? '').toString().trim();
-        if (text) {
-          sdkStderrLines.push(text);
-          if (sdkStderrLines.length > 50) sdkStderrLines.shift();
-          console.error(`[SDK-STDERR] ${text}`);
-        }
-      } catch (_) { /* ignore */ }
-    }
+    stderr
   };
 }
 
@@ -190,6 +195,7 @@ function processStreamMessage(msg, state, logPrefix) {
         // or duplicate this turn's index-0 block (see resetTurnBlockState). Mirrors
         // stream-event-processor.js — both streaming paths must reset identically.
         resetTurnBlockState(state);
+        state.streamedKindsThisMessage = new Set();
         // Emit BLOCK_RESET — mirrors stream-event-processor.js, see there for rationale.
         if (state.streamingEnabled) {
           process.stdout.write('[BLOCK_RESET]\n');
@@ -324,12 +330,13 @@ function emitTextDelta(currentText, state, blockIndex = 0) {
     return;
   }
   // Single-source the delta through the normalizer (see resolveSnapshotDelta).
-  // Emit gate (unchanged from the tail-fill fix):
-  //   - !hasStreamEvents: pre-stream fallback, emit the whole computed delta
-  //   - hasStreamEvents && hadPrevious: genuine tail-fill / snapshot correction
-  //   - hasStreamEvents && !hadPrevious: stream will deliver this block, suppress
-  const { delta, hadPrevious } = resolveSnapshotDelta(state, 'text', blockIndex, currentText);
-  if (delta && (!state.hasStreamEvents || hadPrevious)) {
+  // Emit gate:
+  //   - kind never streamed this message: the snapshot is the only source (no
+  //     stream events, or a relay that streams thinking_delta but no text_delta)
+  //   - hadPrevious: genuine tail-fill / snapshot correction
+  //   - otherwise the stream already delivers this kind, suppress
+  const { delta, hadPrevious, kindStreamed } = resolveSnapshotDelta(state, 'text', blockIndex, currentText);
+  if (delta && (!kindStreamed || hadPrevious)) {
     process.stdout.write(`[CONTENT_DELTA] ${JSON.stringify(delta)}\n`);
   }
   state.lastAssistantContent = currentText;
@@ -341,8 +348,8 @@ function emitThinkingDelta(thinkingText, state, blockIndex = 0) {
     console.log('[THINKING]', thinkingText);
     return;
   }
-  const { delta, hadPrevious } = resolveSnapshotDelta(state, 'thinking', blockIndex, thinkingText);
-  if (delta && (!state.hasStreamEvents || hadPrevious)) {
+  const { delta, hadPrevious, kindStreamed } = resolveSnapshotDelta(state, 'thinking', blockIndex, thinkingText);
+  if (delta && (!kindStreamed || hadPrevious)) {
     process.stdout.write(`[THINKING_DELTA] ${JSON.stringify(delta)}\n`);
   }
   state.lastThinkingContent = thinkingText;
@@ -351,7 +358,7 @@ function emitThinkingDelta(thinkingText, state, blockIndex = 0) {
 /**
  * Execute a query call with auto-retry logic for transient API errors.
  */
-async function executeWithRetry({ createQueryResult, streamingEnabled, resumeSessionId, workingDirectory, logPrefix, outerStreamState, userMessage }) {
+async function executeWithRetry({ createQueryResult, streamingEnabled, resumeSessionId, workingDirectory, logPrefix, outerStreamState, userMessage, supplier }) {
   let retryAttempt = 0;
   let lastRetryError = null;
   const lp = logPrefix ? ` ${logPrefix}` : '';
@@ -371,7 +378,7 @@ async function executeWithRetry({ createQueryResult, streamingEnabled, resumeSes
     try {
       let result;
       try {
-        result = createQueryResult();
+        result = await createQueryResult();
       } catch (queryError) {
         if (shouldRetry(queryError, retryAttempt, state.messageCount)) {
           ({ retryAttempt, lastRetryError } = await performRetry(queryError, retryAttempt, state, resumeSessionId, workingDirectory, streamingEnabled, outerStreamState, lp));
@@ -411,7 +418,7 @@ async function executeWithRetry({ createQueryResult, streamingEnabled, resumeSes
 
       // Fire-and-forget: generate AI title for new sessions (not resumes)
       if (userMessage && state.currentSessionId && !resumeSessionId) {
-        void generateSessionTitle(userMessage, state.currentSessionId, workingDirectory);
+        void generateSessionTitle(userMessage, state.currentSessionId, workingDirectory, supplier);
       }
 
       break;
@@ -470,13 +477,15 @@ function handleSendError(error, streamState, sdkStderrLines) {
   }
   const payload = buildConfigErrorPayload(error);
   if (sdkStderrLines.length > 0) {
-    const sdkErrorText = sdkStderrLines.slice(-10).join('\n');
-    payload.error = `SDK-STDERR:\n\`\`\`\n${sdkErrorText}\n\`\`\`\n\n${payload.error}`;
+    const sdkErrorText = redactSecrets(sdkStderrLines.slice(-10).join('\n'));
+    payload.error = prependSdkStderr(payload.error, sdkErrorText);
     payload.details.sdkError = sdkErrorText;
   }
-  payload.error = truncateString(payload.error);
+  payload.error = truncateString(payload.error, MAX_SEND_ERROR_LENGTH);
   console.error('[SEND_ERROR]', JSON.stringify(payload));
 }
+
+export const __testing = { handleSendError, buildQueryOptions };
 
 // ========== Exported send functions ==========
 
@@ -491,7 +500,7 @@ function handleSendError(error, streamState, sdkStderrLines) {
  * @param {string} agentPrompt - Agent prompt (optional)
  * @param {boolean} streaming - Whether to enable streaming (optional, defaults to config value)
  */
-export async function sendMessage(message, resumeSessionId = null, cwd = null, permissionMode = null, model = null, openedFiles = null, agentPrompt = null, streaming = null, disableThinking = false, reasoningEffort = null) {
+export async function sendMessage(message, resumeSessionId = null, cwd = null, permissionMode = null, model = null, openedFiles = null, agentPrompt = null, streaming = null, disableThinking = false, reasoningEffort = null, ultracode = undefined, supplierId = null, projectTrusted = false) {
   console.log('[DIAG] ========== sendMessage() START ==========');
   console.log('[DIAG] params:', { msgLen: message ? message.length : 0, resumeSessionId: resumeSessionId || '(new)', cwd, permissionMode, model });
 
@@ -499,7 +508,10 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
   let streamingEnabled = false;
   const outerStreamState = { streamStarted: false, streamEnded: false, accumulatedUsage: null };
   try {
-    const { baseUrl, apiKeySource, baseUrlSource } = setupApiKey();
+    const supplier = buildSessionClaudeConfig(supplierId);
+    const { baseUrl, apiKeySource, baseUrlSource } = supplier
+      ? { baseUrl: supplier.env.ANTHROPIC_BASE_URL, apiKeySource: 'session supplier', baseUrlSource: 'session supplier' }
+      : setupApiKey();
     if (isCustomBaseUrl(baseUrl)) {
       console.log('[DEBUG] Custom Base URL detected:', baseUrl);
     }
@@ -510,12 +522,12 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
     try { process.chdir(workingDirectory); } catch (e) { console.error('[WARNING] chdir failed:', e.message); }
     console.log('[DEBUG] Working directory:', workingDirectory);
 
-    const settings = loadClaudeSettings();
+    const settings = supplier?.settings ?? loadClaudeSettings();
     const resolvedModel = resolveModelFromSettings(model, settings?.env);
     // Exact id, not the family alias - see resolveSdkModelName.
     const sdkModelName = resolveSdkModelName(model, resolvedModel);
     console.log('[DEBUG] Model:', model, '->', sdkModelName, '(API:', resolvedModel + ')');
-    setModelEnvironmentVariables(resolvedModel, model, settings?.env);
+    setModelEnvironmentVariables(resolvedModel, model, settings?.env, supplier?.env ?? process.env);
 
     const systemPromptAppend = buildSystemPromptAppend(openedFiles, agentPrompt, message);
 
@@ -528,8 +540,10 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
     console.log('[DEBUG] Config:', { effectivePermissionMode, alwaysThinkingEnabled, maxThinkingTokens, streamingEnabled, reasoningEffort: normalizedReasoningEffort });
 
     const preToolUseHook = createPreToolUseHook(effectivePermissionMode, workingDirectory);
-    const mcpServers = await loadMcpServersConfigAsRecord(workingDirectory);
-    const options = buildQueryOptions({ workingDirectory, permissionMode: effectivePermissionMode, sdkModelName, maxThinkingTokens, streamingEnabled, systemPromptAppend, preToolUseHook, sdkStderrLines, mcpServers, modelId: model, settingsEnv: settings?.env });
+    const trusted = projectTrustFor(projectTrusted, cwd, workingDirectory);
+    const mcpServers = await loadMcpServersConfigAsRecord(workingDirectory, trusted);
+    const options = buildQueryOptions({ workingDirectory, permissionMode: effectivePermissionMode, sdkModelName, maxThinkingTokens, streamingEnabled, systemPromptAppend, preToolUseHook, sdkStderrLines, mcpServers, modelId: model, settingsEnv: settings?.env, resolvedModelId: resolvedModel, ultracode, childEnv: supplier?.env, projectTrusted: trusted });
+    options.settings = buildSessionClaudeSettingsOverride(supplier, options.settings);
 
     if (normalizedReasoningEffort) {
       options.effort = normalizedReasoningEffort;
@@ -541,13 +555,19 @@ export async function sendMessage(message, resumeSessionId = null, cwd = null, p
     const queryFn = await loadSdkQueryFunction('');
 
     await executeWithRetry({
-      createQueryResult: () => queryFn({ prompt: message, options }),
+      createQueryResult: () => ultracode === true
+        ? createUltracodeQuery(queryFn, new AsyncStream(), {
+          type: 'user', session_id: resumeSessionId || '', parent_tool_use_id: null,
+          message: { role: 'user', content: message },
+        }, options)
+        : queryFn({ prompt: message, options }),
       streamingEnabled,
       resumeSessionId,
       workingDirectory,
       logPrefix: '',
       outerStreamState,
-      userMessage: message
+      userMessage: message,
+      supplier,
     });
 
   } catch (error) {
@@ -569,7 +589,8 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
   let streamingEnabled = false;
   const outerStreamState = { streamStarted: false, streamEnded: false, accumulatedUsage: null };
   try {
-    setupApiKey();
+    const supplier = buildSessionClaudeConfig(stdinData?.supplierId);
+    if (!supplier) setupApiKey();
     console.log('[MESSAGE_START]');
 
     const workingDirectory = selectWorkingDirectory(cwd);
@@ -581,11 +602,11 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
 
     const systemPromptAppend = buildSystemPromptAppend(openedFiles, agentPrompt, message);
 
-    const settings = loadClaudeSettings();
+    const settings = supplier?.settings ?? loadClaudeSettings();
     const resolvedAttachModel = resolveModelFromSettings(model, settings?.env);
     const sdkModelName = resolveSdkModelName(model, resolvedAttachModel);
     console.log('[DEBUG] (withAttachments) Model:', model, '->', resolvedAttachModel);
-    setModelEnvironmentVariables(resolvedAttachModel, model, settings?.env);
+    setModelEnvironmentVariables(resolvedAttachModel, model, settings?.env, supplier?.env ?? process.env);
 
     const contentBlocks = await buildContentBlocks(attachments, message);
     const userMessage = {
@@ -604,8 +625,10 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
     streamingEnabled = streamingParam != null ? streamingParam : (settings?.streamingEnabled ?? false);
     console.log('[DEBUG] (withAttachments) Config:', { normalizedPermissionMode, alwaysThinkingEnabled, maxThinkingTokens, streamingEnabled, reasoningEffort });
 
-    const mcpServers = await loadMcpServersConfigAsRecord(workingDirectory);
-    const options = buildQueryOptions({ workingDirectory, permissionMode: normalizedPermissionMode, sdkModelName, maxThinkingTokens, streamingEnabled, systemPromptAppend, preToolUseHook, sdkStderrLines, mcpServers, modelId: model, settingsEnv: settings?.env });
+    const trusted = projectTrustFor(stdinData?.projectTrusted, cwd, workingDirectory);
+    const mcpServers = await loadMcpServersConfigAsRecord(workingDirectory, trusted);
+    const options = buildQueryOptions({ workingDirectory, permissionMode: normalizedPermissionMode, sdkModelName, maxThinkingTokens, streamingEnabled, systemPromptAppend, preToolUseHook, sdkStderrLines, mcpServers, modelId: model, settingsEnv: settings?.env, resolvedModelId: resolvedAttachModel, ultracode: stdinData?.ultracode, childEnv: supplier?.env, projectTrusted: trusted });
+    options.settings = buildSessionClaudeSettingsOverride(supplier, options.settings);
 
     if (reasoningEffort) {
       options.effort = reasoningEffort;
@@ -620,6 +643,9 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
       createQueryResult: () => {
         // Recreate inputStream for each retry (AsyncStream can only be consumed once)
         const inputStream = new AsyncStream();
+        if (stdinData?.ultracode === true) {
+          return createUltracodeQuery(queryFn, inputStream, userMessage, options);
+        }
         inputStream.enqueue(userMessage);
         inputStream.done();
         return queryFn({ prompt: inputStream, options });
@@ -629,7 +655,8 @@ export async function sendMessageWithAttachments(message, resumeSessionId = null
       workingDirectory,
       logPrefix: '(withAttachments)',
       outerStreamState,
-      userMessage: message
+      userMessage: message,
+      supplier,
     });
 
   } catch (error) {

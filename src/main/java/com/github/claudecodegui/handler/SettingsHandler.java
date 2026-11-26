@@ -27,6 +27,7 @@ public class SettingsHandler extends BaseMessageHandler {
     private final ModelProviderHandler modelProviderHandler;
     private final NodePathHandler nodePathHandler;
     private final ClaudeCliPathHandler claudeCliPathHandler;
+    private final ClaudeConfigDirHandler claudeConfigDirHandler;
     private final ProjectConfigHandler projectConfigHandler;
     // Handle for the theme-change callback registered with ThemeConfigService.
     // Kept so it can be cleanly unregistered when the owning window is disposed,
@@ -42,12 +43,15 @@ public class SettingsHandler extends BaseMessageHandler {
         "set_model",
         "set_provider",
         "set_reasoning_effort",
+        "set_claude_ultracode",
         "set_codex_fast_mode",
         "set_dsh_preset",
         "get_node_path",
         "set_node_path",
         "get_claude_cli_path",
         "set_claude_cli_path",
+        "get_claude_config_dir",
+        "set_claude_config_dir",
         // TokenTracker local usage dashboard (vendored tokentracker-cli server)
         "tt_detect_cli",
         "tt_install_cli",
@@ -71,11 +75,21 @@ public class SettingsHandler extends BaseMessageHandler {
         "get_send_shortcut",
         "set_send_shortcut",
         "get_auto_open_file_enabled",
+        "get_markdown_review_config",
+        "set_markdown_review_config",
         "set_auto_open_file_enabled",
+        "get_load_history_on_startup",
+        "set_load_history_on_startup",
+        "get_history_load_timeout",
+        "set_history_load_timeout",
         "get_permission_dialog_timeout",
         "set_permission_dialog_timeout",
+        "get_gemini_idle_reap_minutes",
+        "set_gemini_idle_reap_minutes",
         "get_commit_generation_enabled",
         "set_commit_generation_enabled",
+        "get_session_git_repository_matching_enabled",
+        "set_session_git_repository_matching_enabled",
         "get_status_bar_widget_enabled",
         "set_status_bar_widget_enabled",
 
@@ -96,7 +110,6 @@ public class SettingsHandler extends BaseMessageHandler {
         "set_prompt_enhancer_config",
         "get_project_commit_prompt",
         "set_project_commit_prompt",
-        "get_input_history",
         "record_input_history",
         "delete_input_history_item",
         "clear_input_history",
@@ -110,7 +123,6 @@ public class SettingsHandler extends BaseMessageHandler {
         "browse_sound_file",
         // User language preference
         "set_user_language",
-        "get_user_language",
         "clear_user_language"
     };
 
@@ -123,6 +135,7 @@ public class SettingsHandler extends BaseMessageHandler {
         this.modelProviderHandler = new ModelProviderHandler(context, usagePushService);
         this.nodePathHandler = new NodePathHandler(context);
         this.claudeCliPathHandler = new ClaudeCliPathHandler(context);
+        this.claudeConfigDirHandler = new ClaudeConfigDirHandler(context);
         this.projectConfigHandler = new ProjectConfigHandler(context);
         this.codexSubscriptionQuotaHandler = new CodexSubscriptionQuotaHandler(context);
         this.tokenTrackerHandler = new TokenTrackerHandler(context);
@@ -181,6 +194,9 @@ public class SettingsHandler extends BaseMessageHandler {
             case "set_reasoning_effort":
                 modelProviderHandler.handleSetReasoningEffort(content);
                 return true;
+            case "set_claude_ultracode":
+                modelProviderHandler.handleSetClaudeUltracode(content);
+                return true;
             case "set_codex_fast_mode":
                 modelProviderHandler.handleSetCodexFastMode(content);
                 return true;
@@ -200,6 +216,13 @@ public class SettingsHandler extends BaseMessageHandler {
                 return true;
             case "set_claude_cli_path":
                 claudeCliPathHandler.handleSetClaudeCliPath(content);
+                return true;
+            // Claude config directory
+            case "get_claude_config_dir":
+                claudeConfigDirHandler.handleGetClaudeConfigDir();
+                return true;
+            case "set_claude_config_dir":
+                claudeConfigDirHandler.handleSetClaudeConfigDir(content);
                 return true;
             // TokenTracker local usage dashboard
             case "tt_detect_cli":
@@ -268,8 +291,26 @@ public class SettingsHandler extends BaseMessageHandler {
             case "get_auto_open_file_enabled":
                 projectConfigHandler.handleGetAutoOpenFileEnabled();
                 return true;
+            case "get_markdown_review_config":
+                projectConfigHandler.handleGetMarkdownReviewConfig();
+                return true;
+            case "set_markdown_review_config":
+                projectConfigHandler.handleSetMarkdownReviewConfig(content);
+                return true;
             case "set_auto_open_file_enabled":
                 projectConfigHandler.handleSetAutoOpenFileEnabled(content);
+                return true;
+            case "get_load_history_on_startup":
+                projectConfigHandler.handleGetLoadHistoryOnStartup();
+                return true;
+            case "set_load_history_on_startup":
+                projectConfigHandler.handleSetLoadHistoryOnStartup(content);
+                return true;
+            case "get_history_load_timeout":
+                projectConfigHandler.handleGetHistoryLoadTimeout();
+                return true;
+            case "set_history_load_timeout":
+                projectConfigHandler.handleSetHistoryLoadTimeout(content);
                 return true;
             case "get_permission_dialog_timeout":
                 projectConfigHandler.handleGetPermissionDialogTimeout();
@@ -277,11 +318,23 @@ public class SettingsHandler extends BaseMessageHandler {
             case "set_permission_dialog_timeout":
                 projectConfigHandler.handleSetPermissionDialogTimeout(content);
                 return true;
+            case "get_gemini_idle_reap_minutes":
+                projectConfigHandler.handleGetGeminiIdleReapMinutes();
+                return true;
+            case "set_gemini_idle_reap_minutes":
+                projectConfigHandler.handleSetGeminiIdleReapMinutes(content);
+                return true;
             case "get_commit_generation_enabled":
                 projectConfigHandler.handleGetCommitGenerationEnabled();
                 return true;
             case "set_commit_generation_enabled":
                 projectConfigHandler.handleSetCommitGenerationEnabled(content);
+                return true;
+            case "get_session_git_repository_matching_enabled":
+                projectConfigHandler.handleGetSessionGitRepositoryMatchingEnabled();
+                return true;
+            case "set_session_git_repository_matching_enabled":
+                projectConfigHandler.handleSetSessionGitRepositoryMatchingEnabled(content);
                 return true;
             case "get_status_bar_widget_enabled":
                 projectConfigHandler.handleGetStatusBarWidgetEnabled();
@@ -348,9 +401,6 @@ public class SettingsHandler extends BaseMessageHandler {
                 projectConfigHandler.handleSetProjectCommitPrompt(content);
                 return true;
             // Input history
-            case "get_input_history":
-                inputHistoryHandler.handleGetInputHistory();
-                return true;
             case "record_input_history":
                 inputHistoryHandler.handleRecordInputHistory(content);
                 return true;
@@ -386,9 +436,6 @@ public class SettingsHandler extends BaseMessageHandler {
             case "set_user_language":
                 handleSetUserLanguage(content);
                 return true;
-            case "get_user_language":
-                handleGetUserLanguage();
-                return true;
             case "clear_user_language":
                 handleClearUserLanguage();
                 return true;
@@ -402,6 +449,13 @@ public class SettingsHandler extends BaseMessageHandler {
      * On failure, push the authoritative config back so the webview can roll
      * back its optimistic UI update.
      */
+    private void refreshMarkdownPreviewLanguage() {
+        LanguageConfigService.invalidateUserLanguageCache();
+        if (context.getProject() != null) {
+            com.github.claudecodegui.markdown.MarkdownReviewService.getInstance(context.getProject()).refreshPreviewSettings();
+        }
+    }
+
     private void handleSetUserLanguage(String content) {
         try {
             JsonObject json = gson.fromJson(content, JsonObject.class);
@@ -413,23 +467,13 @@ public class SettingsHandler extends BaseMessageHandler {
                 return;
             }
             LanguageConfigService.setUserLanguage(context.getSettingsService(), language);
+            refreshMarkdownPreviewLanguage();
             LOG.info("[SettingsHandler] Saved user language preference: " + language);
             pushLanguageConfig();
         } catch (Exception e) {
             LOG.error("[SettingsHandler] Failed to save user language: " + e.getMessage(), e);
             pushLanguageConfig();
         }
-    }
-
-    /**
-     * Handle get_user_language: return user's saved language preference.
-     */
-    private void handleGetUserLanguage() {
-        String userLanguage = LanguageConfigService.getUserLanguage(context.getSettingsService());
-        JsonObject response = new JsonObject();
-        response.addProperty("language", userLanguage != null ? userLanguage : "");
-        response.addProperty("manuallySet", userLanguage != null);
-        callJavaScript("window.onUserLanguage", escapeJs(response.toString()));
     }
 
     /**
@@ -440,6 +484,7 @@ public class SettingsHandler extends BaseMessageHandler {
     private void handleClearUserLanguage() {
         try {
             LanguageConfigService.clearUserLanguage(context.getSettingsService());
+            refreshMarkdownPreviewLanguage();
             LOG.info("[SettingsHandler] Cleared user language preference");
         } catch (Exception e) {
             LOG.error("[SettingsHandler] Failed to clear user language: " + e.getMessage(), e);

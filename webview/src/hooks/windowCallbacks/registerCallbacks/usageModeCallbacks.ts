@@ -31,8 +31,11 @@ export function registerUsageModeCallbacks(options: UseWindowCallbacksOptions): 
     setCodexPermissionMode,
     setSelectedClaudeModel,
     setSelectedCodexModel,
+    setSelectedGeminiModel,
+    setGeminiPermissionMode,
     setLongContextEnabled,
     setReasoningEffort,
+    setClaudeUltracode,
     setCodexFastMode,
     setProviderConfigVersion,
     setActiveProviderConfig,
@@ -97,6 +100,9 @@ export function registerUsageModeCallbacks(options: UseWindowCallbacksOptions): 
       setPermissionMode((prev) => (prev === nextMode ? prev : nextMode));
       if (activeProvider === 'codex') {
         setCodexPermissionMode((prev) => (prev === nextMode ? prev : nextMode));
+      } else if (activeProvider === 'gemini') {
+        // Gemini's plan/sandbox would otherwise leak into the Claude slot.
+        setGeminiPermissionMode?.((prev) => (prev === nextMode ? prev : nextMode));
       } else {
         setClaudePermissionMode((prev) => (prev === nextMode ? prev : nextMode));
       }
@@ -120,6 +126,12 @@ export function registerUsageModeCallbacks(options: UseWindowCallbacksOptions): 
       setSelectedClaudeModel(normalizeClaudeModelId(modelId, readCustomClaudeModelIds()));
     } else if (provider === 'codex') {
       setSelectedCodexModel(modelId);
+    } else if (provider === 'gemini') {
+      // Java fires onModelConfirmed for EVERY provider (ModelProviderHandler),
+      // so a gemini confirmation previously fell through every branch and the
+      // gemini model slot never heard about it. Gemini ids are full catalog
+      // slugs (family+effort in ONE slug) — stored raw, like codex.
+      setSelectedGeminiModel?.(modelId);
     }
   };
 
@@ -147,9 +159,12 @@ export function registerUsageModeCallbacks(options: UseWindowCallbacksOptions): 
 
       updateMode(state.permissionMode as PermissionMode | undefined, provider);
 
-      const reasoningValues: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+      const reasoningValues: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
       if (reasoningValues.includes(state.reasoningEffort as ReasoningEffort)) {
         setReasoningEffort(state.reasoningEffort as ReasoningEffort);
+      }
+      if (typeof state.claudeUltracode === 'boolean') {
+        setClaudeUltracode?.(state.claudeUltracode);
       }
       if (state.codexFastMode === 'normal' || state.codexFastMode === 'fast') {
         setCodexFastMode(state.codexFastMode as CodexFastMode);
@@ -166,6 +181,7 @@ export function registerUsageModeCallbacks(options: UseWindowCallbacksOptions): 
     window.applyBackendTabState(pending);
   }
 
+  const providerEventDispatcher = window.updateActiveProvider;
   window.updateActiveProvider = (jsonStr: string) => {
     try {
       const provider = JSON.parse(jsonStr);
@@ -174,6 +190,17 @@ export function registerUsageModeCallbacks(options: UseWindowCallbacksOptions): 
       setActiveProviderConfig(provider);
     } catch (error) {
       console.error('[Frontend] Failed to parse active provider in App:', error);
+    }
+    // Forward to the runtime-provider dispatcher installed at bootstrap so
+    // subscribeActiveProvider listeners (RuntimeProviderSelect,
+    // useClaudePlanUsage, …) keep receiving updates — replacing it here would
+    // silence the whole subscriber registry.
+    if (providerEventDispatcher) {
+      try {
+        providerEventDispatcher(jsonStr);
+      } catch (error) {
+        console.error('[Frontend] Active provider dispatcher failed:', error);
+      }
     }
   };
 

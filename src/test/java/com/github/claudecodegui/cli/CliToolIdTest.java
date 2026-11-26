@@ -18,6 +18,8 @@ public class CliToolIdTest {
         assertEquals(CliToolId.OMP, CliToolId.fromId(" OMP "));
         assertEquals(CliToolId.MINIMAX, CliToolId.fromId("minimax"));
         assertEquals(CliToolId.MINIMAX, CliToolId.fromId(" MiniMax "));
+        assertEquals(CliToolId.GEMINI, CliToolId.fromId("gemini"));
+        assertEquals(CliToolId.GEMINI, CliToolId.fromId(" GEMINI "));
     }
 
     @Test
@@ -32,10 +34,14 @@ public class CliToolIdTest {
         assertEquals("grok", CliToolId.GROK.getBinaryName());
         assertEquals("kimi", CliToolId.KIMI.getBinaryName());
         assertEquals("opencode", CliToolId.OPENCODE.getBinaryName());
+        assertEquals("opencode-cli", CliToolId.OPENCODE.getAltBinaryName());
         assertEquals("pi", CliToolId.PI.getBinaryName());
         assertEquals("omp", CliToolId.OMP.getBinaryName());
         assertEquals("OMP CLI", CliToolId.OMP.getDisplayName());
         assertEquals("minimax", CliToolId.MINIMAX.getBinaryName());
+        assertEquals("mcode", CliToolId.MINIMAX.getAltBinaryName());
+        assertEquals("agy", CliToolId.GEMINI.getBinaryName());
+        assertEquals("Antigravity CLI", CliToolId.GEMINI.getDisplayName());
         for (CliToolId tool : CliToolId.values()) {
             assertNotNull(tool.getDisplayName());
         }

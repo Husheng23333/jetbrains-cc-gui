@@ -1,3 +1,5 @@
+import { withExecutionScope } from '../utils/execution-scope.js';
+
 /**
  * Claude channel command handler – isolates all Claude specific command logic
  * away from the shared channel-manager entry point.
@@ -60,7 +62,11 @@ export function parseOptionalTurnCursor(raw) {
  * @param {string[]} args
  * @param {object|null} stdinData
  */
-export async function handleClaudeCommand(command, args, stdinData) {
+export function handleClaudeCommand(command, args, stdinData) {
+  return withExecutionScope(stdinData?.executionScope, () => handleScopedClaudeCommand(command, args, stdinData));
+}
+
+async function handleScopedClaudeCommand(command, args, stdinData) {
   switch (command) {
     case 'listModels':
       listModels();
@@ -69,7 +75,7 @@ export async function handleClaudeCommand(command, args, stdinData) {
     case 'send': {
       if (stdinData && stdinData.message !== undefined) {
         // Include streaming and disableThinking when destructuring
-        const { message, sessionId, cwd, permissionMode, model, openedFiles, agentPrompt, streaming, disableThinking, reasoningEffort } = stdinData;
+        const { message, sessionId, cwd, permissionMode, model, openedFiles, agentPrompt, streaming, disableThinking, reasoningEffort, ultracode, projectTrusted } = stdinData;
         await claudeSendMessage(
           message,
           sessionId || '',
@@ -80,7 +86,10 @@ export async function handleClaudeCommand(command, args, stdinData) {
           agentPrompt || null,
           streaming,  // Pass streaming parameter
           disableThinking || false,  // Pass disableThinking parameter
-          reasoningEffort || null  // Pass reasoning effort level
+          reasoningEffort || null,  // Pass reasoning effort level
+          ultracode,
+          stdinData.supplierId,
+          projectTrusted === true
         );
       } else {
         await claudeSendMessage(args[0], args[1], args[2], args[3], args[4]);
@@ -91,14 +100,14 @@ export async function handleClaudeCommand(command, args, stdinData) {
     case 'sendWithAttachments': {
       if (stdinData && stdinData.message !== undefined) {
         // Include streaming when destructuring
-        const { message, sessionId, cwd, permissionMode, model, attachments, openedFiles, agentPrompt, streaming, reasoningEffort } = stdinData;
+        const { message, sessionId, cwd, permissionMode, model, attachments, openedFiles, agentPrompt, streaming, reasoningEffort, ultracode, projectTrusted } = stdinData;
         await claudeSendMessageWithAttachments(
           message,
           sessionId || '',
           cwd || '',
           permissionMode || '',
           model || '',
-          attachments ? { attachments, openedFiles, agentPrompt, streaming, reasoningEffort } : { openedFiles, agentPrompt, streaming, reasoningEffort }
+          { ...(attachments ? { attachments } : {}), openedFiles, agentPrompt, streaming, reasoningEffort, ultracode, supplierId: stdinData.supplierId, projectTrusted }
         );
       } else {
         await claudeSendMessageWithAttachments(args[0], args[1], args[2], args[3], args[4], stdinData);
@@ -145,14 +154,14 @@ export async function handleClaudeCommand(command, args, stdinData) {
 
     case 'getMcpServerStatus': {
       const cwd = stdinData?.cwd || args[0] || null;
-      await claudeGetMcpServerStatus(cwd);
+      await claudeGetMcpServerStatus(cwd, stdinData?.projectTrusted === true);
       break;
     }
 
     case 'getMcpServerTools': {
       const serverId = stdinData?.serverId || args[0] || null;
       const cwd = stdinData?.cwd || args[1] || null;
-      await claudeGetMcpServerTools(serverId, cwd);
+      await claudeGetMcpServerTools(serverId, cwd, stdinData?.projectTrusted === true);
       break;
     }
 

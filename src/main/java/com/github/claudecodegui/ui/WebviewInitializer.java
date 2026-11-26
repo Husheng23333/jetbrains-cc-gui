@@ -15,6 +15,7 @@ import com.github.claudecodegui.util.FontConfigService;
 import com.github.claudecodegui.util.HtmlLoader;
 import com.github.claudecodegui.util.JsUtils;
 import com.github.claudecodegui.util.JBCefBrowserFactory;
+import com.github.claudecodegui.util.JcefStartupDiagnostics;
 import com.github.claudecodegui.util.LanguageConfigService;
 import com.github.claudecodegui.util.PlatformUtils;
 import com.github.claudecodegui.util.ThemeConfigService;
@@ -29,10 +30,11 @@ import com.intellij.ui.jcef.JBCefBrowser;
 import com.intellij.ui.jcef.JBCefOSRHandlerFactory;
 import com.intellij.ui.jcef.JBCefBrowserBase;
 import com.intellij.ui.jcef.JBCefJSQuery;
-import org.cef.CefClient;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefFrame;
+import org.cef.handler.CefLifeSpanHandlerAdapter;
 import org.cef.handler.CefLoadHandlerAdapter;
+import org.cef.network.CefRequest;
 import org.jetbrains.annotations.NotNull;
 
 import javax.swing.*;
@@ -90,6 +92,7 @@ public class WebviewInitializer {
         Map<String, MarkerCliBridge> getCliBridges();
         JPanel getMainPanel();
         HtmlLoader getHtmlLoader();
+        default String getDraftCacheKey() { return null; }
         HandlerContext getHandlerContext();
         JBCefBrowser getBrowser();
         JBCefOSRHandlerFactory getOsrHandlerFactory();
@@ -126,7 +129,7 @@ public class WebviewInitializer {
      * native callback handles during a watchdog recreation.
      */
     private volatile BrowserBridges bridges;
-    private boolean browserCleanupFailed;
+    private final BrowserCleanup<JBCefBrowser> browserCleanup = new BrowserCleanup<>(JBCefBrowser::dispose);
     private int pageGeneration;
     private PageLoadKind nextBrowserPageLoadKind = PageLoadKind.INITIAL_LOAD;
 
@@ -146,7 +149,7 @@ public class WebviewInitializer {
             return;
         }
         JBCefBrowser existingBrowser = this.host.getBrowser();
-        if (browserCleanupFailed) {
+        if (browserCleanup.hasPendingCleanup()) {
             showWebviewRecoveryFailedPanel();
             return;
         }
@@ -398,7 +401,7 @@ public class WebviewInitializer {
             NodeDetectionResult nodeResult,
             String htmlContent
     ) {
-        if (!isCurrentInitialization(initializationId) || host.getBrowser() != null) {
+        if (!isCurrentInitialization(initializationId) || host.getBrowser() != null || browserCleanup.hasPendingCleanup()) {
             return;
         }
         ClaudeSDKBridge claudeSDKBridge = host.getClaudeSDKBridge();
@@ -429,22 +432,40 @@ public class WebviewInitializer {
         }
 
         try {
+            if (showMissingJawtStartupFailure(null)) {
+                return;
+            }
             browser = JBCefBrowserFactory.create(host.getOsrHandlerFactory());
             // Native creation may pump EDT events. Recheck ownership before publishing it.
-            if (!isCurrentInitialization(initializationId) || host.getBrowser() != null) {
-                browser.dispose();
+            if (!isCurrentInitialization(initializationId) || host.getBrowser() != null || browserCleanup.hasPendingCleanup()) {
+                disposeFailedBrowser(browser);
                 return;
             }
             JBCefBrowser createdBrowser = browser;
             host.setBrowser(createdBrowser);
             host.getHandlerContext().setBrowser(createdBrowser);
 
+            // Register before ExternalNavigationGuard: JBCefClient 2024.1 answers onBeforePopup with
+            // the last life-span handler, and this adapter's default false would allow the popup.
+            createdBrowser.getJBCefClient().addLifeSpanHandler(new CefLifeSpanHandlerAdapter() {
+                /** Records native creation independently of the Java browser wrapper. */
+                @Override
+                public void onAfterCreated(CefBrowser target) {
+                    BrowserBridges currentBridges = bridges;
+                    if (currentBridges != null && currentBridges.belongsTo(createdBrowser)
+                            && isCurrentBrowser(currentBridges)) {
+                        currentBridges.startupProgress.nativeBrowserCreated();
+                        logStartupProgress("native_browser_created", currentBridges);
+                    }
+                }
+            }, createdBrowser.getCefBrowser());
+
+            // One registration: JBCefClient 2024.1 keeps only the last handler's answer (see CombinedRequestHandler).
             createdBrowser.getJBCefClient().addRequestHandler(
-                    new UiFontResourceRequestHandler(),
-                    createdBrowser.getCefBrowser()
-            );
-            createdBrowser.getJBCefClient().addRequestHandler(
-                    new WebviewAssetRequestHandler(),
+                    new CombinedRequestHandler(
+                            new UiFontResourceRequestHandler(),
+                            new WebviewAssetRequestHandler(),
+                            ExternalNavigationGuard.install(createdBrowser)),
                     createdBrowser.getCefBrowser()
             );
 
@@ -476,6 +497,10 @@ public class WebviewInitializer {
                 // beginTeardown has flipped disposed.
                 if (dispatch) {
                     host.handleJavaScriptMessage(pageGeneration, message);
+                    if (message.startsWith("frontend_ready:") && this.host.isFrontendReady()) {
+                        logStartupProgress("frontend_ready", currentBridges);
+                        runOnEventDispatchThread(() -> clearStartupFailureNotice(currentBridges, pageGeneration));
+                    }
                 }
                 return new JBCefJSQuery.Response(dispatch ? "ok" : "stale");
             });
@@ -533,14 +558,28 @@ public class WebviewInitializer {
             host.activatePageGeneration(initialPageGeneration);
             host.setFrontendReady(false);
 
-            // LoadHandler must be registered before loadHTML, otherwise the
-            // first frame's onLoadEnd is missed and the JS bridge injection
-            // never runs, leaving the frontend without a sendToJava channel.
-            // Register directly on the browser's dedicated native client. The
-            // JBCefClient convenience overload filters callbacks through a map
-            // keyed by CefBrowser objects, which is not reliable with Android
-            // Studio's remote JCEF proxies and can silently drop onLoadEnd.
+            // Register before loadHTML so the first page can establish its bridge. Classic CEF
+            // needs JBCefClient's multiplexer. Remote clients replace their raw handler instead, so
+            // they keep the direct registration that avoids unreliable browser-keyed dispatch.
             CefLoadHandlerAdapter bridgeLoadHandler = new CefLoadHandlerAdapter() {
+                /** Records when the main frame starts loading. */
+                @Override
+                public void onLoadStart(CefBrowser target, CefFrame frame, CefRequest.TransitionType transitionType) {
+                    if (frame.isMain() && isCurrentBrowser(currentBridges)) {
+                        currentBridges.startupProgress.mainFrameStarted();
+                        logStartupProgress("main_frame_started", currentBridges);
+                    }
+                }
+
+                /** Records frame failures while ignoring cancellations from replaced loads. */
+                @Override
+                public void onLoadError(CefBrowser target, CefFrame frame, ErrorCode errorCode, String errorText, String failedUrl) {
+                    if (frame.isMain() && isCurrentBrowser(currentBridges) && errorCode != ErrorCode.ERR_ABORTED) {
+                        currentBridges.startupProgress.mainFrameFailed(errorCode.name());
+                        LOG.warn("[WebviewStartup] Main frame load failed: " + currentBridges.startupProgress.describe());
+                    }
+                }
+
                 @Override
                 public void onLoadEnd(CefBrowser cefBrowser, CefFrame frame, int httpStatusCode) {
                     LOG.debug("onLoadEnd called, isMain=" + frame.isMain() + ", url=" + cefBrowser.getURL());
@@ -581,6 +620,8 @@ public class WebviewInitializer {
                             "};");
                     }
 
+                    currentBridges.startupProgress.mainFrameFinished(httpStatusCode);
+                    logStartupProgress("main_frame_finished", currentBridges);
                     try {
                         String runtimeBootstrap = joinRuntimePageBootstrap(
                                 pageContextInjection,
@@ -589,6 +630,7 @@ public class WebviewInitializer {
                                 clipboardPathInjection
                         );
                         cefBrowser.executeJavaScript(runtimeBootstrap, cefBrowser.getURL(), 0);
+                        currentBridges.startupProgress.bridgeSubmitted();
                     } catch (Exception | LinkageError e) {
                         LOG.debug("Skipping webview bridge injection after browser disposal: " + e.getMessage(), e);
                         return;
@@ -624,8 +666,7 @@ public class WebviewInitializer {
                     }
                 }
             };
-            CefClient nativeClient = createdBrowser.getJBCefClient().getCefClient();
-            nativeClient.addLoadHandler(bridgeLoadHandler);
+            JBCefBrowserFactory.addLoadHandler(createdBrowser, bridgeLoadHandler);
 
             // At this point the JSQuery bridges and the LoadHandler are both
             // registered, so it is safe to load the HTML - the first frame's
@@ -689,8 +730,7 @@ public class WebviewInitializer {
                     + ", pageGeneration=" + initialPageGeneration);
 
         } catch (IllegalStateException e) {
-            this.disposeFailedBrowser(browser);
-            if (!isCurrentInitialization(initializationId)) {
+            if (!finishFailedInitialization(browser, initializationId)) {
                 return;
             }
             if (e.getMessage() != null && e.getMessage().contains("JCEF")) {
@@ -701,8 +741,7 @@ public class WebviewInitializer {
                 showErrorPanel();
             }
         } catch (NullPointerException e) {
-            this.disposeFailedBrowser(browser);
-            if (!isCurrentInitialization(initializationId)) {
+            if (!finishFailedInitialization(browser, initializationId)) {
                 return;
             }
             String msg = e.getMessage();
@@ -714,15 +753,13 @@ public class WebviewInitializer {
                 showErrorPanel();
             }
         } catch (Exception e) {
-            this.disposeFailedBrowser(browser);
-            if (!isCurrentInitialization(initializationId)) {
+            if (!finishFailedInitialization(browser, initializationId)) {
                 return;
             }
             LOG.error("Failed to create UI components: " + e.getMessage(), e);
             showErrorPanel();
         } catch (LinkageError e) {
-            this.disposeFailedBrowser(browser);
-            if (!isCurrentInitialization(initializationId)) {
+            if (!finishFailedInitialization(browser, initializationId)) {
                 return;
             }
             // Platform/JBR binary mismatch (e.g. Android Studio 2026.x whose
@@ -935,10 +972,11 @@ public class WebviewInitializer {
                     clipboardPathInjection
             );
             cefBrowser.executeJavaScript(runtimeBootstrap, url, 0);
+            currentBridges.startupProgress.bridgeSubmitted();
 
             injectFrontendConfiguration(cefBrowser, currentBridges, pageGeneration);
             if (attempt == 1) {
-                LOG.info("[JCEF] Executed first fallback bridge injection for remote-mode startup");
+                logStartupProgress("fallback_bridge_submitted", currentBridges);
             }
             return true;
         } catch (Exception e) {
@@ -948,6 +986,91 @@ public class WebviewInitializer {
             LOG.warn("Fallback bridge injection is unavailable: " + e.getMessage(), e);
             return false;
         }
+    }
+
+    private boolean isCurrentBrowser(BrowserBridges currentBridges) {
+        return !isOwnerDisposed() && this.bridges == currentBridges
+                && this.host.getBrowser() == currentBridges.browser;
+    }
+
+    private void logStartupProgress(String milestone, BrowserBridges currentBridges) {
+        LOG.info("[WebviewStartup] " + milestone
+                + ", browserId=" + System.identityHashCode(currentBridges.browser)
+                + ", cefState=" + JcefStartupDiagnostics.runtimeState()
+                + ", " + currentBridges.startupProgress.describe());
+    }
+
+    private boolean showMissingJawtStartupFailure(JBCefBrowser browser) {
+        Throwable failure = JcefStartupDiagnostics.missingJawtStartupFailure();
+        if (failure == null) {
+            return false;
+        }
+        // A failed global startup future cannot be repaired by reloading or recreating a page.
+        LOG.warn("[WebviewStartup] In-process JCEF could not load JAWT; restart required. " + HtmlLoader.describeHost(), failure);
+        this.host.getWebviewWatchdog().stop();
+        disposeFailedBrowser(browser);
+        if (!isOwnerDisposed()) {
+            replaceMainContent(ErrorPanelBuilder.buildSimple(
+                    ClaudeCodeGuiBundle.message("toolwindow.jcefJawtStartupFailed"),
+                    ClaudeCodeGuiBundle.message("toolwindow.jcefJawtStartupFailedSolution")));
+        }
+        return true;
+    }
+
+    /** Shows a retry notice after bounded recovery without hiding a browser that may still start. */
+    public void showStartupFailureNotice() {
+        runOnEventDispatchThread(() -> {
+            BrowserBridges currentBridges = this.bridges;
+            if (currentBridges == null || !isCurrentBrowser(currentBridges)
+                    || this.host.isFrontendReady()) {
+                return;
+            }
+            if (showMissingJawtStartupFailure(currentBridges.browser) || currentBridges.startupFailureNotice != null) {
+                return;
+            }
+            int pageGeneration = currentBridges.getPageGeneration();
+            Throwable nativeFailure = JcefStartupDiagnostics.nativeStartupFailure();
+            String details = "[WebviewStartup] Recovery exhausted, " + HtmlLoader.describeHost()
+                    + ", cefState=" + JcefStartupDiagnostics.runtimeState()
+                    + ", browserClass=" + currentBridges.browser.getCefBrowser().getClass().getName()
+                    + ", " + currentBridges.startupProgress.describe();
+            if (nativeFailure == null) {
+                LOG.warn(details);
+            } else {
+                LOG.warn(details, nativeFailure);
+            }
+            JPanel notice = ErrorPanelBuilder.buildRetryNotice(
+                    ClaudeCodeGuiBundle.message("toolwindow.webviewStartupFailed"),
+                    ClaudeCodeGuiBundle.message("toolwindow.webviewStartupFailedSolution"),
+                    ClaudeCodeGuiBundle.message("toolwindow.webviewStartupRetry"),
+                    () -> {
+                        if (isCurrentBrowser(currentBridges) && !this.host.isFrontendReady()) {
+                            this.host.getWebviewWatchdog().markTabActivated();
+                            recreateWebview("startup_retry");
+                        }
+                    });
+            currentBridges.startupFailureNotice = notice;
+            // Keep the native component attached: a slow runtime can still complete, and the
+            // fallback timer must remain able to bootstrap it without another IDE restart.
+            this.host.getMainPanel().add(notice, BorderLayout.NORTH);
+            this.host.getMainPanel().revalidate();
+            this.host.getMainPanel().repaint();
+            // The ready callback can race with notice creation on a native thread.
+            clearStartupFailureNotice(currentBridges, pageGeneration);
+        });
+    }
+
+    private void clearStartupFailureNotice(BrowserBridges currentBridges, int pageGeneration) {
+        JPanel notice = currentBridges.startupFailureNotice;
+        if (notice == null || !isCurrentBrowser(currentBridges)
+                || !currentBridges.isCurrentPage(currentBridges.browser, pageGeneration)
+                || !this.host.isFrontendReady()) {
+            return;
+        }
+        currentBridges.startupFailureNotice = null;
+        this.host.getMainPanel().remove(notice);
+        this.host.getMainPanel().revalidate();
+        this.host.getMainPanel().repaint();
     }
 
     static String buildShiftEscInjection(String hidePanelInvocation) {
@@ -1134,11 +1257,24 @@ public class WebviewInitializer {
         }
     }
 
+    private boolean finishFailedInitialization(JBCefBrowser browser, int initializationId) {
+        disposeFailedBrowser(browser);
+        if (!isCurrentInitialization(initializationId)) {
+            return false;
+        }
+        if (browserCleanup.hasPendingCleanup()) {
+            showWebviewRecoveryFailedPanel();
+            return false;
+        }
+        return !showMissingJawtStartupFailure(null);
+    }
+
     private void disposeFailedBrowser(JBCefBrowser browser) {
         if (browser == null) {
             return;
         }
 
+        browserCleanup.retain(browser);
         BrowserBridges currentBridges;
         synchronized (this.bridgeLock) {
             currentBridges = this.bridges;
@@ -1148,25 +1284,33 @@ public class WebviewInitializer {
                 currentBridges = null;
             }
         }
-        if (currentBridges != null) {
-            currentBridges.dispose();
-        }
         try {
-            browser.dispose();
-        } catch (Exception | LinkageError e) {
-            browserCleanupFailed = true;
-            if (host.getBrowser() == null) {
-                host.setBrowser(browser);
+            if (host.getBrowser() == browser) {
+                // Detach before native query disposal can pump callbacks into the host.
+                host.getHandlerContext().setBrowser(null);
+                host.setBrowser(null);
+                host.setFrontendReady(false);
             }
-            LOG.warn("Failed to dispose browser after webview initialization error: " + e.getMessage(), e);
-            return;
+        } finally {
+            try {
+                if (currentBridges != null) {
+                    currentBridges.dispose();
+                }
+            } finally {
+                browserCleanup.dispose(browser);
+            }
         }
-        if (this.host.getBrowser() == browser) {
-            this.host.setBrowser(null);
-            this.host.getHandlerContext().setBrowser(null);
-        }
-        LOG.info("Incomplete webview browser disposed, initializerId=" + System.identityHashCode(this)
-                + ", browserId=" + System.identityHashCode(browser));
+    }
+
+    /** Final native cleanup also retries browsers quarantined by an earlier initialization failure. */
+    public void disposeBrowsers(JBCefBrowser currentBrowser) {
+        browserCleanup.retain(currentBrowser);
+        browserCleanup.retry();
+    }
+
+    /** Evaluated on the EDT before the watchdog spends a recovery attempt. */
+    public boolean canRecoverWebview() {
+        return !isOwnerDisposed() && !initialization.isInProgress() && !browserCleanup.hasPendingCleanup();
     }
 
     /**
@@ -1527,17 +1671,20 @@ public class WebviewInitializer {
      */
     public void reloadWebview(String reason) {
         runOnEventDispatchThread(() -> {
-            if (host.isDisposed()) { return; }
-            if (browserCleanupFailed) {
+            if (isOwnerDisposed()) { return; }
+            if (browserCleanup.hasPendingCleanup()) {
                 showWebviewRecoveryFailedPanel();
                 return;
             }
             JBCefBrowser browser = host.getBrowser();
-            if (browser == null) {
-                recreateWebview(reason + "_no_browser");
-                return;
-            }
             try {
+                if (browser == null) {
+                    recreateWebview(reason + "_no_browser");
+                    return;
+                }
+                if (!this.host.isFrontendReady() && showMissingJawtStartupFailure(browser)) {
+                    return;
+                }
                 LOG.info("[WebviewWatchdog] Reloading webview (" + reason + ")");
                 BrowserBridges currentBridges;
                 int pageGeneration;
@@ -1587,7 +1734,10 @@ public class WebviewInitializer {
                 htmlContent,
                 tabProvider,
                 tabModel,
-                SessionState.discoverUserDshPresetIds());
+                SessionState.discoverUserDshPresetIds(),
+                session != null ? session.getReasoningEffort() : null,
+                session != null ? session.isClaudeUltracode() : null,
+                host.getDraftCacheKey());
     }
 
     /**
@@ -1600,7 +1750,12 @@ public class WebviewInitializer {
     private void recreateWebview(String reason, boolean replacePreparation) {
         runOnEventDispatchThread(() -> {
             if (isOwnerDisposed()) { return; }
-            if (browserCleanupFailed) {
+            if (replacePreparation) {
+                // An explicit configuration retry may recover from a transient native cleanup failure.
+                browserCleanup.retry();
+                if (isOwnerDisposed()) { return; }
+            }
+            if (browserCleanup.hasPendingCleanup()) {
                 showWebviewRecoveryFailedPanel();
                 return;
             }
@@ -1623,29 +1778,16 @@ public class WebviewInitializer {
             JPanel mainPanel = host.getMainPanel();
             try {
                 if (browser != null) {
-                    try {
-                        mainPanel.remove(browser.getComponent());
-                    } catch (Exception ignored) {
-                    }
-                    // Release the JS bridges before the browser itself so the
-                    // native callback handles do not outlive the browser.
-                    this.disposeBridges();
-                    try {
-                        browser.dispose();
-                        LOG.info("Previous webview browser disposed, initializerId=" + System.identityHashCode(this)
-                                + ", browserId=" + System.identityHashCode(browser));
-                    } catch (Exception | LinkageError e) {
-                        browserCleanupFailed = true;
-                        LOG.warn("[WebviewWatchdog] Browser disposal failed; replacement cancelled", e);
+                    // Detach the host, then release queries before their owning browser.
+                    disposeFailedBrowser(browser);
+                    if (browserCleanup.hasPendingCleanup()) {
                         showWebviewRecoveryFailedPanel();
                         return;
                     }
-                    host.getHandlerContext().setBrowser(null);
-                    host.setBrowser(null);
-                    browserCleanupFailed = false;
                 }
 
                 LOG.info("[WebviewWatchdog] Recreating webview (" + reason + ")");
+                if (isOwnerDisposed()) { return; }
                 mainPanel.removeAll();
                 createUIComponents();
                 mainPanel.revalidate();
@@ -1739,6 +1881,9 @@ public class WebviewInitializer {
         private final JBCefJSQuery hidePanelQuery;
         private int pageGeneration;
         private PageLoadKind pageLoadKind = PageLoadKind.INITIAL_LOAD;
+        private final WebviewStartupProgress startupProgress = new WebviewStartupProgress();
+        // The notice belongs to this browser's Swing lifetime, including in-place reloads.
+        private JPanel startupFailureNotice;
         private final PageConfigurationCache configurationCache = new PageConfigurationCache();
         private final BridgeInjectionTimerLifecycle bridgeRetryLifecycle =
                 new BridgeInjectionTimerLifecycle();
@@ -1767,6 +1912,7 @@ public class WebviewInitializer {
         private synchronized void beginPageLoad(int newPageGeneration, PageLoadKind newPageLoadKind) {
             this.pageGeneration = newPageGeneration;
             this.pageLoadKind = newPageLoadKind;
+            this.startupProgress.beginPageLoad(newPageGeneration);
             this.configurationCache.reset(newPageGeneration);
             this.bridgeRetryLifecycle.beginPageLoad(newPageGeneration);
         }

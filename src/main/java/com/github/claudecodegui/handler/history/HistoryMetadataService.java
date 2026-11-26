@@ -1,7 +1,11 @@
 package com.github.claudecodegui.handler.history;
 
+import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.handler.NodeJsServiceCaller;
 import com.github.claudecodegui.handler.core.HandlerContext;
+import com.github.claudecodegui.provider.claude.ClaudeHistoryReader;
+import com.github.claudecodegui.session.ClaudeSession;
+import com.github.claudecodegui.settings.SessionSupplierStateService;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -104,6 +108,135 @@ class HistoryMetadataService {
     }
 
     /**
+     * Regenerate a session's AI title from its conversation content.
+     *
+     * Forwards the request to the daemon's claude.regenerateTitle command and
+     * relays the outcome to the frontend via window.onTitleRegenerated so the
+     * history-list refresh button can clear its loading state, apply the new
+     * title, and show a success/failure toast. The original title is untouched
+     * on failure: the daemon only appends a new ai-title row after the model
+     * returns one.
+     */
+    void handleRegenerateTitle(String content) {
+        CompletableFuture.runAsync(() -> {
+            // Parsed before the guarded block so the catch below can still
+            // address the frontend's spinner via the session id; a null id
+            // payload is ignored by the webview and would leave the button
+            // spinning until its timeout fallback fires.
+            String sessionId = null;
+            try {
+                LOG.info("[HistoryHandler] ========== 重新生成会话标题 ==========");
+
+                JsonObject request = new Gson().fromJson(content, JsonObject.class);
+                sessionId = request.has("sessionId") && !request.get("sessionId").isJsonNull()
+                        ? request.get("sessionId").getAsString() : null;
+                if (sessionId == null || sessionId.isEmpty()) {
+                    notifyTitleRegenerated(sessionId, false, null, "invalid_session", null);
+                    return;
+                }
+                // Effectively-final copy for the nested async callbacks below.
+                final String sessionKey = sessionId;
+
+                // Resolve the project path the same way as history loading so
+                // the daemon locates the session file under the same key.
+                String rawPath = context.resolveEffectiveWorkingDirectory();
+                String nodePath = NodeDetector.getInstance().getCachedNodePath();
+                String projectPath = NodeDetector.isWslPath(nodePath)
+                        ? NodeDetector.convertToWslPath(rawPath) : rawPath;
+                if (projectPath == null) {
+                    LOG.warn("[HistoryHandler] Project base path is null");
+                    notifyTitleRegenerated(sessionId, false, null, "backend_error",
+                            "project path unavailable");
+                    return;
+                }
+
+                // With repository-matched history enabled, a row can belong to
+                // a sibling worktree of the same Git remote; its transcript
+                // lives under that worktree's project key, so resolve the cwd
+                // exactly like export/delete do (otherwise the daemon looks in
+                // the wrong project directory and the row ends in
+                // session_not_found).
+                String projectRoot = context.getProject() == null ? projectPath : context.getProject().getBasePath();
+                String historyCwd = new ClaudeHistoryReader()
+                        .resolveRepositoryHistoryCwd(sessionKey, projectPath, projectRoot, context.getSettingsService());
+
+                ClaudeSession openSession = context.getSession();
+                boolean openClaudeSession = openSession != null && "claude".equals(openSession.getProvider());
+                String supplierId = resolveSupplierId(sessionKey,
+                        openClaudeSession ? openSession.getSessionId() : null,
+                        openClaudeSession ? openSession.getState().getSupplierId("claude") : null,
+                        SessionSupplierStateService.getInstance());
+
+                LOG.info("[HistoryHandler] SessionId: " + sessionKey + ", historyCwd: " + historyCwd
+                        + ", supplierId: " + supplierId);
+
+                context.getClaudeSDKBridge()
+                        .regenerateSessionTitle(sessionKey, historyCwd, supplierId)
+                        .thenAccept(result -> {
+                            boolean success = result.has("success") && result.get("success").getAsBoolean();
+                            String title = result.has("title") && !result.get("title").isJsonNull()
+                                    ? result.get("title").getAsString() : null;
+                            String code = result.has("code") && !result.get("code").isJsonNull()
+                                    ? result.get("code").getAsString() : null;
+                            String error = result.has("error") && !result.get("error").isJsonNull()
+                                    ? result.get("error").getAsString() : null;
+                            notifyTitleRegenerated(sessionKey, success, title, code, error);
+                        })
+                        .exceptionally(ex -> {
+                            LOG.error("[HistoryHandler] 重新生成标题失败: " + ex.getMessage(), ex);
+                            notifyTitleRegenerated(sessionKey, false, null, "backend_error",
+                                    ex.getMessage() != null ? ex.getMessage() : "Unknown error");
+                            return null;
+                        });
+            } catch (Exception e) {
+                LOG.error("[HistoryHandler] 重新生成标题失败: " + e.getMessage(), e);
+                notifyTitleRegenerated(sessionId, false, null, "backend_error",
+                        e.getMessage() != null ? e.getMessage() : "未知错误");
+            }
+        });
+    }
+
+    /**
+     * The supplier a Claude conversation is bound to, so its title is generated
+     * through the same account as the conversation. The open tab's selection
+     * wins because the saved binding is only written when the tab state is
+     * persisted; other sessions use the saved binding. Null keeps the daemon on
+     * the global profile, as for sessions that predate supplier selection.
+     */
+    static String resolveSupplierId(String sessionId, String openSessionId, String openSupplierId,
+                                    SessionSupplierStateService bindings) {
+        if (openSupplierId != null && sessionId.equals(openSessionId)) {
+            return openSupplierId;
+        }
+        return bindings == null ? null : bindings.getSupplier("claude", sessionId);
+    }
+
+    /**
+     * Deliver a regeneration outcome to the frontend's
+     * window.onTitleRegenerated callback as a single JSON payload.
+     */
+    private void notifyTitleRegenerated(String sessionId, boolean success, String title, String code, String error) {
+        JsonObject payload = new JsonObject();
+        if (sessionId != null && !sessionId.isEmpty()) {
+            payload.addProperty("sessionId", sessionId);
+        }
+        payload.addProperty("success", success);
+        if (title != null) {
+            payload.addProperty("title", title);
+        }
+        if (code != null) {
+            payload.addProperty("code", code);
+        }
+        if (error != null) {
+            payload.addProperty("error", error);
+        }
+        String json = new Gson().toJson(payload);
+        ApplicationManager.getApplication().invokeLater(() -> context.executeJavaScriptQueued(
+                "if (window.onTitleRegenerated) { "
+                        + "window.onTitleRegenerated('" + context.escapeJs(json) + "'); }"));
+    }
+
+    /**
      * Delete an orphaned custom title entry (B-011: session ID migration cleanup).
      */
     void handleDeleteTitle(String sessionId) {
@@ -119,5 +252,65 @@ class HistoryMetadataService {
                 titleFileLock.unlock();
             }
         });
+    }
+
+    /**
+     * Push the user-set title of a restored session to the webview.
+     * <p>
+     * A restored transcript only carries the CLI-derived title (AI title /
+     * first prompt), while a title set through the header lives in
+     * session-titles.json. Without this push the header shows the stale
+     * transcript title until the session is reopened from the history list
+     * (which merges custom titles in {@link HistoryLoadService}).
+     *
+     * @param sessionId the session whose saved title should be applied
+     */
+    void pushCustomTitle(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        CompletableFuture.runAsync(() -> {
+            try {
+                String titlesJson = nodeJsServiceCaller.callNodeJsTitlesService("loadTitles");
+                String customTitle = extractCustomTitle(titlesJson, sessionId);
+                if (customTitle == null) {
+                    return;
+                }
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (context.isDisposed()) {
+                        return;
+                    }
+                    context.callJavaScript("restoreSessionTitle",
+                            context.escapeJs(sessionId), context.escapeJs(customTitle));
+                });
+            } catch (Exception e) {
+                LOG.warn("[HistoryHandler] 恢复会话标题失败: " + e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Extract one session's custom title from the raw session-titles.json payload.
+     *
+     * @param titlesJson raw JSON returned by the titles service
+     * @param sessionId session to look up
+     * @return the custom title, or null when absent, blank or unparsable
+     */
+    static String extractCustomTitle(String titlesJson, String sessionId) {
+        try {
+            JsonObject titles = new Gson().fromJson(titlesJson, JsonObject.class);
+            if (titles == null || !titles.has(sessionId) || !titles.get(sessionId).isJsonObject()) {
+                return null;
+            }
+            JsonObject titleInfo = titles.getAsJsonObject(sessionId);
+            if (!titleInfo.has("customTitle") || titleInfo.get("customTitle").isJsonNull()) {
+                return null;
+            }
+            String customTitle = titleInfo.get("customTitle").getAsString();
+            return customTitle.isBlank() ? null : customTitle;
+        } catch (Exception e) {
+            LOG.warn("[HistoryHandler] 解析会话标题失败: " + e.getMessage());
+            return null;
+        }
     }
 }

@@ -10,6 +10,22 @@ import org.junit.Test;
 public class SessionStateTest {
 
     @Test
+    public void claudeWorkflowModeIsIndependentOfEffortAndCanBeDisabled() {
+        SessionState state = new SessionState();
+        Assert.assertFalse(state.isClaudeUltracode());
+        state.setReasoningEffort("high");
+        state.setClaudeUltracode(true);
+        Assert.assertEquals("high", state.getReasoningEffort());
+        state.setReasoningEffort("max");
+        Assert.assertTrue(state.isClaudeUltracode());
+        state.setClaudeUltracode(false);
+        Assert.assertFalse(state.isClaudeUltracode());
+        Assert.assertEquals("max", state.getReasoningEffort());
+        state.setReasoningEffort("ultra");
+        Assert.assertEquals("ultra", state.getReasoningEffort());
+    }
+
+    @Test
     public void setModelMigratesRetiredSonnet47ToSonnet5() {
         SessionState state = new SessionState();
         // Saved by versions <= 0.5.2 where sonnet-4-7 was the default model.
@@ -58,6 +74,16 @@ public class SessionStateTest {
         Assert.assertEquals("gpt-5.6-sol", state.getModel());
         state.setModel("qwen3.5-plus");
         Assert.assertEquals("qwen3.5-plus", state.getModel());
+    }
+
+    @Test
+    public void freshSessionHasNoConversationId() {
+        // Story 1.3 AC2/AC5: a brand-new session (new chat tab, provider
+        // switch, create_new_session) starts with NO conversation id. The send
+        // path then serializes it as "" and the gemini bridge omits the
+        // --conversation flag, so the CLI starts a fresh conversation — no
+        // residual id can ever be reused across the reset.
+        Assert.assertNull(new SessionState().getSessionId());
     }
 
     @Test
@@ -111,5 +137,36 @@ public class SessionStateTest {
         SessionState state = new SessionState();
         // The initial value must never be a retired id (#1678).
         Assert.assertEquals("claude-sonnet-5", state.getModel());
+    }
+
+    @Test
+    public void permissionModeWhitelistAcceptsEveryWebviewModeId() {
+        // Unknown ids are silently rejected by set_mode, so any id the webview
+        // offers (including the gemini sandbox posture) must be whitelisted here.
+        for (String mode : new String[] {
+            "default", "plan", "acceptEdits", "autoEdit", "bypassPermissions", "smol", "slow", "sandbox",
+        }) {
+            Assert.assertTrue("whitelist must accept " + mode, SessionState.isValidPermissionMode(mode));
+        }
+        Assert.assertFalse(SessionState.isValidPermissionMode(null));
+        Assert.assertFalse(SessionState.isValidPermissionMode("bogus"));
+    }
+
+    @Test
+    public void normalizesSandboxModeToDefaultForNonGeminiProviders() {
+        SessionState geminiState = new SessionState();
+        geminiState.setProvider("gemini");
+        geminiState.setPermissionMode("sandbox");
+        Assert.assertEquals("sandbox", geminiState.getPermissionMode());
+
+        SessionState claudeState = new SessionState();
+        claudeState.setProvider("claude");
+        claudeState.setPermissionMode("sandbox");
+        Assert.assertEquals("default", claudeState.getPermissionMode());
+
+        SessionState codexState = new SessionState();
+        codexState.setProvider("codex");
+        codexState.setPermissionMode("sandbox");
+        Assert.assertEquals("default", codexState.getPermissionMode());
     }
 }

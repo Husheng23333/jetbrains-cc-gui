@@ -107,6 +107,7 @@ export interface ClaudeMessage {
 }
 
 export interface CodexHistoryPageInfo {
+  transitionToken?: string;
   pageId: string;
   sessionId: string;
   mode: 'replace' | 'prepend';
@@ -133,8 +134,14 @@ export interface TodoItem {
 }
 
 export interface HistorySessionSummary {
+  cwd?: string;
+  requiresCwdConfirmation?: boolean;
   sessionId: string;
   title: string;
+  /** Running targets cannot be selected or deleted from history. */
+  running?: boolean;
+  /** Another chat window holds this thread's native writer; it outlives local turns. */
+  ownedElsewhere?: boolean;
   /** Native thread metadata does not contain a count until history has been read. */
   messageCount?: number;
   /** Scopes asynchronous counts to the metadata revision displayed by this list. */
@@ -149,9 +156,12 @@ export interface HistorySessionSummary {
   agent?: string;
   fileSize?: number;
   entrypoint?: string; // Session entrypoint: 'cli', 'sdk-cli', 'claude-vscode', etc.
+  /** Set by HistoryLoadService when session-titles.json carries a manual title. */
+  hasCustomTitle?: boolean;
 }
 
 export interface HistoryData {
+  provider?: string;
   success: boolean;
   error?: string;
   sessions?: HistorySessionSummary[];

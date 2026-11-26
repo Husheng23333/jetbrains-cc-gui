@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import com.github.claudecodegui.bridge.NodeDetector;
 import com.github.claudecodegui.handler.history.HistoryMessageInjector;
 import com.github.claudecodegui.session.ClaudeSession;
 import com.github.claudecodegui.settings.CodemossSettingsService;
@@ -14,10 +15,14 @@ import com.github.claudecodegui.provider.common.MessageCallback;
 import com.github.claudecodegui.provider.common.SDKResult;
 import com.github.claudecodegui.provider.common.SessionHistoryNotFoundException;
 import com.github.claudecodegui.settings.ConfigPathManager;
+import com.github.claudecodegui.util.WslPathUtil;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.Map;
 import java.util.Set;
 import java.nio.file.Path;
@@ -35,6 +40,15 @@ import java.util.function.Supplier;
  * communication to the long-running Node daemon.
  */
 public class CodexSDKBridge extends BaseSDKBridge {
+    private java.util.function.Supplier<String> sessionSupplierResolver = () -> null;
+
+    public void setSessionSupplierResolver(java.util.function.Supplier<String> resolver) {
+        this.sessionSupplierResolver = resolver;
+    }
+
+    public boolean hasSessionSupplier() {
+        return sessionSupplierResolver.get() != null;
+    }
 
     private static final String IMAGE_STORAGE_DIR_NAME = "codex-images";
     private final CodexHistoryReader historyReader;
@@ -50,6 +64,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
     private final String bridgeOwnerId = UUID.randomUUID().toString();
     private final String ownerScope;
     private final CodexInteractionRegistry interactionRegistry = new CodexInteractionRegistry();
+    private final Set<String> answeringInteractions = ConcurrentHashMap.newKeySet();
 
     /** Executor for blocking daemon round-trips; never the common pool, never the UI thread. */
     public static java.util.concurrent.Executor codexControlExecutor() {
@@ -552,6 +567,38 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 nativeSettings);
     }
 
+    /**
+     * Converts a Windows or WSL UNC path to a Linux path when the serving node runs in WSL, so the
+     * Codex child process can open it. No-op for a native node. A path in another distro stays as it
+     * is: the same Linux path where the daemon runs may be a different project.
+     */
+    public String normalizePathForNode(String path) {
+        if (path == null || path.isEmpty() || !servingNodeRunsInWsl() || otherWslDistroOf(path) != null) {
+            return path;
+        }
+        return NodeDetector.convertToWslPath(path);
+    }
+
+    /** A live daemon keeps the node it started with until it restarts, whatever the setting says now. */
+    private boolean servingNodeRunsInWsl() {
+        DaemonBridge daemon = liveDaemon();
+        String launchedNode = daemon == null ? null : daemon.getLaunchedNodePath();
+        return NodeDetector.isWslPath(launchedNode != null ? launchedNode : this.nodeDetector.getCachedNodePath());
+    }
+
+    /** Returns the distro holding {@code path} when the live daemon runs Codex in a different one. */
+    private String otherWslDistroOf(String path) {
+        DaemonBridge daemon = liveDaemon();
+        String daemonDistro = daemon == null ? null : daemon.getWslDistro();
+        String pathDistro = WslPathUtil.uncDistroName(path);
+        return daemonDistro == null || pathDistro == null || daemonDistro.equalsIgnoreCase(pathDistro) ? null : pathDistro;
+    }
+
+    private DaemonBridge liveDaemon() {
+        DaemonBridge daemon = this.daemonCoordinator.getCurrentDaemonBridge();
+        return daemon != null && daemon.isAlive() ? daemon : null;
+    }
+
     private CompletableFuture<SDKResult> sendMessageViaAppServer(
             String channelId,
             String message,
@@ -579,15 +626,9 @@ public class CodexSDKBridge extends BaseSDKBridge {
             boolean claimedThreadForSend = false;
             boolean daemonDispatchAttempted = false;
             try {
-                String accessMode = CodemossSettingsService.CODEX_RUNTIME_ACCESS_INACTIVE;
-                try {
-                    accessMode = this.settingsService.getCodexRuntimeAccessMode();
-                } catch (Exception e) {
-                    LOG.warn("[Codex] Failed to resolve runtime access mode before app-server send: "
-                            + e.getMessage());
-                }
-                if (!isCodexRuntimeAccessAllowed(accessMode)) {
-                    String error = ClaudeCodeGuiBundle.message("error.codexLocalAccessNotAuthorized");
+                if (!this.isCodexRuntimeAccessAllowed()) {
+                    String error = ClaudeCodeGuiBundle.message(hasSessionSupplier()
+                            ? "error.sessionSupplierUnavailable" : "error.codexLocalAccessNotAuthorized");
                     streamedResult.success = false;
                     streamedResult.error = error;
                     callback.onError(error);
@@ -597,6 +638,17 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 DaemonBridge daemon = this.daemonCoordinator.getDaemonBridge();
                 if (daemon == null) {
                     String error = "Codex app-server daemon is unavailable";
+                    streamedResult.success = false;
+                    streamedResult.error = error;
+                    callback.onError(error);
+                    return streamedResult;
+                }
+                String otherDistro = servingNodeRunsInWsl() ? otherWslDistroOf(cwd) : null;
+                if (otherDistro != null) {
+                    String error = "This project is in the WSL distribution " + otherDistro
+                            + ", but Codex runs in " + daemon.getWslDistro()
+                            + ". Make it the default with: wsl --set-default " + otherDistro
+                            + ", then restart the IDE.";
                     streamedResult.success = false;
                     streamedResult.error = error;
                     callback.onError(error);
@@ -622,7 +674,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                                 ? UUID.randomUUID().toString() : clientMessageId,
                         message == null ? "" : message,
                         threadId,
-                        cwd,
+                        normalizePathForNode(cwd),
                         permissionMode,
                         model,
                         reasoningEffort,
@@ -660,7 +712,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 if (!result.success && result.error == null) {
                     result.error = streamedResult.error;
                 }
-                if (result.success || "User interrupted".equals(result.error)) {
+                if (result.success || result.cancelled) {
                     if (!hadSendError.get()) {
                         callback.onComplete(result);
                     }
@@ -710,18 +762,33 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 || !this.interactionRegistry.matchesPageToken(interactionKey, pageToken)) {
             return staleInteractionError();
         }
-        JsonObject acknowledgement = sendCodexControl(
+        return respondCodexInteraction(entry, cwd, result);
+    }
+
+    private JsonObject respondCodexInteraction(CodexInteractionRegistry.Entry entry, String cwd, JsonObject result) {
+        String interactionKey = entry.interactionKey();
+        if (!this.answeringInteractions.add(interactionKey)) {
+            return interactionError("Codex interaction is already being answered");
+        }
+        try {
+            if (this.interactionRegistry.get(interactionKey) != entry) {
+                return interactionError("Unknown or stale Codex interaction");
+            }
+            JsonObject acknowledgement = sendCodexControl(
                 "codex.respondInteraction",
-                channelId,
+                entry.channelId(),
                 cwd,
                 params -> {
                     params.add("rpcId", entry.rpcId() == null ? new JsonObject() : entry.rpcId().deepCopy());
                     params.add("result", result == null ? new JsonObject() : result.deepCopy());
                 });
-        if (endsInteraction(acknowledgement)) {
-            this.interactionRegistry.resolve(interactionKey);
+            if (endsInteraction(acknowledgement)) {
+                this.interactionRegistry.resolve(interactionKey);
+            }
+            return acknowledgement;
+        } finally {
+            this.answeringInteractions.remove(interactionKey);
         }
-        return acknowledgement;
     }
 
     /**
@@ -750,7 +817,14 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 || !this.interactionRegistry.matchesPageToken(interactionKey, pageToken)) {
             return staleInteractionError();
         }
-        JsonObject acknowledgement = sendCodexControl(
+        if (!this.answeringInteractions.add(interactionKey)) {
+            return interactionError("Codex interaction is already being answered");
+        }
+        try {
+            if (this.interactionRegistry.get(interactionKey) != entry) {
+                return interactionError("Unknown or stale Codex interaction");
+            }
+            JsonObject acknowledgement = sendCodexControl(
                 "codex.respondInteractionError",
                 channelId,
                 cwd,
@@ -759,24 +833,31 @@ public class CodexSDKBridge extends BaseSDKBridge {
                     params.addProperty("code", code);
                     params.addProperty("message", message == null ? "Codex interaction cancelled" : message);
                 });
-        if (endsInteraction(acknowledgement)) {
-            this.interactionRegistry.resolve(interactionKey);
+            if (endsInteraction(acknowledgement)) {
+                this.interactionRegistry.resolve(interactionKey);
+            }
+            return acknowledgement;
+        } finally {
+            this.answeringInteractions.remove(interactionKey);
         }
-        return acknowledgement;
     }
 
     /**
      * Whether a reply ack means the native request is over: it was delivered, or Codex reports it
      * no longer waits for it. Keeping the latter registered would let a page refresh show a dialog
-     * that can never be answered. An unconfirmed (timed-out) reply may still land, so it stays.
+     * that can never be answered. A reply Java stopped waiting for may still land, so it stays; one
+     * the daemon itself retired as unconfirmed is no longer pending there and ends here too.
      */
     static boolean endsInteraction(JsonObject acknowledgement) {
         if (!acknowledgement.has("error")) {
             return true;
         }
-        return acknowledgement.has("code") && acknowledgement.get("code").isJsonPrimitive()
-                && CodexAppServerRequestExecutor.INTERACTION_NOT_PENDING.equals(
-                        acknowledgement.get("code").getAsString());
+        if (!acknowledgement.has("code") || !acknowledgement.get("code").isJsonPrimitive()) {
+            return false;
+        }
+        String code = acknowledgement.get("code").getAsString();
+        return CodexAppServerRequestExecutor.INTERACTION_NOT_PENDING.equals(code)
+                || CodexAppServerRequestExecutor.DELIVERY_UNCONFIRMED.equals(code);
     }
 
     private static boolean sameChannel(String first, String second) {
@@ -895,13 +976,18 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 ? "codex" : channelId.trim();
         JsonObject params = new JsonObject();
         params.addProperty("channelId", safeChannelId);
-        params.addProperty("cwd", cwd == null ? "" : cwd);
+        params.addProperty("cwd", cwd == null ? "" : normalizePathForNode(cwd));
         params.addProperty("threadId", threadId == null ? "" : threadId);
         params.addProperty("planItemId", planItemId == null ? "" : planItemId);
         params.addProperty("planText", planText == null ? "" : planText);
         params.addProperty("clientMessageId", UUID.randomUUID().toString());
         params.addProperty("sessionEpoch", this.runtimeSessionEpochs.computeIfAbsent(
                 safeChannelId, ignored -> UUID.randomUUID().toString()));
+        try {
+            this.captureRuntimeConfiguration(params);
+        } catch (Exception error) {
+            return CompletableFuture.completedFuture(interactionError(error.getMessage()));
+        }
         return this.dispatchCodexLongOperation(daemon, "codex.executePlan", params,
                 this.callbackSubscriptions.get(safeChannelId));
     }
@@ -997,7 +1083,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 ? "codex" : channelId.trim();
         JsonObject params = new JsonObject();
         params.addProperty("channelId", safeChannelId);
-        params.addProperty("cwd", cwd == null ? "" : cwd);
+        params.addProperty("cwd", cwd == null ? "" : normalizePathForNode(cwd));
         params.addProperty("threadId", threadId == null ? "" : threadId);
         params.addProperty("sessionEpoch", this.runtimeSessionEpochs.computeIfAbsent(
                 safeChannelId, ignored -> UUID.randomUUID().toString()));
@@ -1014,12 +1100,23 @@ public class CodexSDKBridge extends BaseSDKBridge {
         if (requestParams != null) {
             params.add("params", requestParams.deepCopy());
         }
-        boolean transcriptRead = "codex.readHistoryPage".equals(method) || "codex.readSubagent".equals(method)
-                || "codex.countThreadMessages".equals(method);
-        long timeoutMs = transcriptRead ? 120_000L : 30_000L;
+        long timeoutMs = readOnlyTimeoutMillis(method, requestParams);
         return CompletableFuture.supplyAsync(() -> this.appServerRequestExecutor
                 .sendReadOnlyCommand(daemon, method, params, timeoutMs),
                 CodexAppServerRequestExecutor.turnWaitExecutor());
+    }
+
+    static long readOnlyTimeoutMillis(String method, JsonObject requestParams) {
+        // Status polls need a short RPC deadline too: cancelling a CompletableFuture
+        // does not interrupt supplyAsync's worker waiting on the native response.
+        if ("codex.readSubagent".equals(method) && requestParams != null
+                && requestParams.has("includeHistory") && requestParams.get("includeHistory").isJsonPrimitive()
+                && !requestParams.get("includeHistory").getAsBoolean()) {
+            return 8_000L;
+        }
+        boolean transcriptRead = "codex.readHistoryPage".equals(method) || "codex.readSubagent".equals(method)
+                || "codex.countThreadMessages".equals(method);
+        return transcriptRead ? 120_000L : 30_000L;
     }
 
     /**
@@ -1040,6 +1137,49 @@ public class CodexSDKBridge extends BaseSDKBridge {
             }
             this.forgetChannelState(channelId, threadId, sessionEpoch);
         });
+    }
+
+    /** Whether this bridge owns the native writer for the given persisted thread. */
+    public boolean ownsCodexThread(String threadId) {
+        return threadId != null
+                && this.bridgeOwnerId.equals(CodexThreadOwnerRegistry.ownerOf(this.ownerScope, threadId));
+    }
+
+    /** Whether any chat window in this IDE currently holds a native writer for the thread. */
+    public boolean hasCodexThreadOwner(String threadId) {
+        return threadId != null && CodexThreadOwnerRegistry.ownerOf(this.ownerScope, threadId) != null;
+    }
+
+    /** Release an idle owner for deletion without cancelling a turn that started concurrently. */
+    public CompletableFuture<JsonObject> releaseIdleCodexThread(String channelId, String cwd, String threadId) {
+        CompletableFuture<JsonObject> release = runCodexLifecycleOperation(
+                "codex.releaseThread", channelId, cwd, threadId, true);
+        String sessionEpoch = this.runtimeSessionEpochs.get(safeChannelId(channelId));
+        return release.whenComplete((result, error) -> {
+            // A busy refusal must preserve the live channel and every other daemon session.
+            if (error == null && result != null && !result.has("error")) {
+                this.forgetChannelState(channelId, threadId, sessionEpoch);
+            }
+        });
+    }
+
+    /**
+     * Hold writer leases while history files are deleted, so no chat window can
+     * resume one of these threads between the idle release and the file removal.
+     *
+     * @param threadIds persisted thread ids selected for deletion
+     * @return a callback releasing every lease, or null when a thread already has a writer
+     */
+    public Runnable reserveCodexThreadsForDeletion(Collection<String> threadIds) {
+        String deletionOwnerId = "history-delete:" + UUID.randomUUID();
+        Runnable release = () -> CodexThreadOwnerRegistry.releaseOwner(deletionOwnerId);
+        for (String threadId : threadIds) {
+            if (!CodexThreadOwnerRegistry.claim(this.ownerScope, threadId, deletionOwnerId).acquired()) {
+                release.run();
+                return null;
+            }
+        }
+        return release;
     }
 
     /**
@@ -1076,6 +1216,12 @@ public class CodexSDKBridge extends BaseSDKBridge {
             String cwd,
             String threadId
     ) {
+        return runCodexLifecycleOperation(method, channelId, cwd, threadId, false);
+    }
+
+    private CompletableFuture<JsonObject> runCodexLifecycleOperation(
+            String method, String channelId, String cwd, String threadId, boolean onlyIfIdle
+    ) {
         boolean releasing = "codex.releaseThread".equals(method);
         if (!releasing && !this.isCodexRuntimeAccessAllowed()) {
             return CompletableFuture.completedFuture(interactionError("Codex runtime access is inactive"));
@@ -1093,8 +1239,11 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 ? "codex" : channelId.trim();
         JsonObject params = new JsonObject();
         params.addProperty("channelId", safeChannelId);
-        params.addProperty("cwd", cwd == null ? "" : cwd);
+        params.addProperty("cwd", cwd == null ? "" : normalizePathForNode(cwd));
         params.addProperty("threadId", threadId == null ? "" : threadId);
+        if (releasing && onlyIfIdle) {
+            params.addProperty("onlyIfIdle", true);
+        }
         params.addProperty("sessionEpoch", this.runtimeSessionEpochs.computeIfAbsent(
                 safeChannelId, ignored -> UUID.randomUUID().toString()));
         if (!releasing) {
@@ -1114,6 +1263,10 @@ public class CodexSDKBridge extends BaseSDKBridge {
 
     private boolean isCodexRuntimeAccessAllowed() {
         try {
+            String supplierId = sessionSupplierResolver.get();
+            if (supplierId != null) {
+                return com.github.claudecodegui.settings.SessionSupplierCatalog.available(this.settingsService, "codex", supplierId);
+            }
             String mode = this.settingsService.getCodexRuntimeAccessMode();
             return isCodexRuntimeAccessAllowed(mode);
         } catch (Exception e) {
@@ -1152,7 +1305,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 ? "codex" : channelId.trim();
         JsonObject params = new JsonObject();
         params.addProperty("channelId", safeChannelId);
-        params.addProperty("cwd", cwd == null ? "" : cwd);
+        params.addProperty("cwd", cwd == null ? "" : normalizePathForNode(cwd));
         params.addProperty("threadId", threadId == null ? "" : threadId);
         params.addProperty("sessionEpoch", this.runtimeSessionEpochs.computeIfAbsent(
                 safeChannelId, ignored -> UUID.randomUUID().toString()));
@@ -1207,15 +1360,37 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 ? "codex" : channelId.trim();
         JsonObject params = new JsonObject();
         params.addProperty("channelId", safeChannelId);
-        params.addProperty("cwd", cwd == null ? "" : cwd);
+        params.addProperty("cwd", cwd == null ? "" : normalizePathForNode(cwd));
         String sessionEpoch = this.runtimeSessionEpochs.computeIfAbsent(
                 safeChannelId, ignored -> UUID.randomUUID().toString());
         params.addProperty("sessionEpoch", sessionEpoch);
         payloadWriter.accept(params);
+        if ("codex.updateSettings".equals(method)) {
+            try {
+                this.captureRuntimeConfiguration(params);
+            } catch (RuntimeException error) {
+                LOG.warn("[Codex] Could not prepare the settings update", error);
+                return interactionError("Codex provider configuration could not be captured");
+            }
+        }
         return this.appServerRequestExecutor.sendControlCommand(daemon, method, params, 10_000L);
     }
 
     private void captureRuntimeConfiguration(JsonObject params) {
+        // Bound conversations read the same native config.toml, so separate plugin aliases first.
+        try {
+            new com.github.claudecodegui.settings.CodexSettingsManager(this.gson, Path.of(this.ownerScope))
+                    .prepareNativeConfig(this::isCodexRuntimeAccessAllowed);
+        } catch (Exception error) {
+            // Separating plugin aliases only removes a CLI warning; it must never block a turn.
+            LOG.warn("[Codex] Skipped plugin alias separation: " + error.getMessage());
+        }
+        String supplierId = sessionSupplierResolver.get();
+        if (supplierId != null) {
+            params.addProperty("supplierId", supplierId);
+            // The daemon owns the native environment, including WSL path normalization.
+            return;
+        }
         // Managed credentials never travel per request: the daemon resolves them
         // from its sanitized environment (config.toml env_key, see
         // codex-native-runtime-config.js). Only the auth mode and a provider
@@ -1260,6 +1435,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                             callback.onError(result.get("error").getAsString());
                             result.addProperty("errorReported", true);
                         } else {
+                            streamed.cancelled = cancelled;
                             streamed.success = !cancelled && !result.has("error");
                             callback.onComplete(streamed);
                         }
@@ -1313,11 +1489,22 @@ public class CodexSDKBridge extends BaseSDKBridge {
      * Get persisted Codex session history messages.
      */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd) {
-        return this.getSessionMessages(sessionId, cwd, null);
+        return this.readSessionMessages(sessionId, cwd, null, () -> false, false);
     }
 
     /** Reads native history on the chat host, with an explicit offline-only legacy fallback. */
     public List<JsonObject> getSessionMessages(String sessionId, String cwd, String channelId) {
+        return this.readSessionMessages(sessionId, cwd, channelId, () -> false, false);
+    }
+
+    /** Restore read: cancellable, and an unreadable rollout is a retryable failure instead of empty history. */
+    public List<JsonObject> getSessionMessages(String sessionId, String cwd, String channelId, BooleanSupplier cancellation) {
+        return this.readSessionMessages(sessionId, cwd, channelId, cancellation, true);
+    }
+
+    private List<JsonObject> readSessionMessages(String sessionId, String cwd, String channelId,
+                                                 BooleanSupplier cancellation, boolean strictLegacyRead) {
+        checkHistoryCancellation(cancellation);
         if (this.nativeHistoryEnabled && this.isCodexRuntimeAccessAllowed()) {
             try {
                 CodexNativeHistoryReader reader = new CodexNativeHistoryReader(this, channelId, cwd, sessionId);
@@ -1325,7 +1512,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 java.util.Set<JsonElement> cursors = new java.util.HashSet<>();
                 JsonElement cursor = null;
                 do {
-                    CodexNativeHistoryReader.Page page = reader.readPage(cursor, 100);
+                    CodexNativeHistoryReader.Page page = reader.readPage(cursor, 100, cancellation);
                     pages.add(page.messages());
                     cursor = page.cursor();
                     if (cursor != null && !cursor.isJsonNull() && !cursors.add(cursor)) {
@@ -1336,6 +1523,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 java.util.Map<String, Integer> identityPositions = new java.util.HashMap<>();
                 for (int index = pages.size() - 1; index >= 0; index--) {
                     for (JsonObject message : pages.get(index)) {
+                        checkHistoryCancellation(cancellation);
                         String identity = com.github.claudecodegui.session.CodexHistoryMerger.identity(message.getAsJsonObject("raw"));
                         Integer existing = identity == null ? null : identityPositions.get(identity);
                         if (existing != null) {
@@ -1352,7 +1540,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                     }
                 }
                 try {
-                    List<JsonObject> legacy = this.getLegacySessionMessages(sessionId, cwd);
+                    List<JsonObject> legacy = this.getLegacySessionMessages(sessionId, cwd, cancellation, strictLegacyRead);
                     if (CodexNativeHistoryReader.countBlocks(messages, "tool_use") < CodexNativeHistoryReader.countBlocks(legacy, "tool_use")
                             || CodexNativeHistoryReader.countBlocks(messages, "thinking") < CodexNativeHistoryReader.countBlocks(legacy, "thinking")
                             || (!CodexNativeHistoryReader.hasUsage(messages) && CodexNativeHistoryReader.hasUsage(legacy))
@@ -1361,10 +1549,15 @@ public class CodexSDKBridge extends BaseSDKBridge {
                             || countHistoryUsers(legacy) > countHistoryUsers(messages)) {
                         return legacy;
                     }
+                } catch (CancellationException cancelled) {
+                    throw cancelled;
                 } catch (Exception unavailable) {
                     LOG.debug("Legacy transcript is unavailable; retaining the native history source");
                 }
+                checkHistoryCancellation(cancellation);
                 return messages;
+            } catch (CancellationException cancelled) {
+                throw cancelled;
             } catch (Exception error) {
                 if (!CodexNativeHistoryReader.permitsOfflineFallback(error.getMessage())) {
                     throw new IllegalStateException("Native Codex history failed", error);
@@ -1372,10 +1565,10 @@ public class CodexSDKBridge extends BaseSDKBridge {
             }
         }
         try {
-            return this.getLegacySessionMessages(sessionId, cwd);
+            return this.getLegacySessionMessages(sessionId, cwd, cancellation, strictLegacyRead);
+        } catch (CancellationException cancelled) {
+            throw cancelled;
         } catch (SessionHistoryNotFoundException e) {
-            // A pruned rollout must reach the orchestrator's stale-session retire
-            // path instead of masquerading as an empty-but-valid transcript.
             throw e;
         } catch (Exception e) {
             LOG.warn("Failed to load Codex session history: " + e.getMessage(), e);
@@ -1383,13 +1576,27 @@ public class CodexSDKBridge extends BaseSDKBridge {
         }
     }
 
-    private List<JsonObject> getLegacySessionMessages(String sessionId, String cwd) {
-        String messagesJson = this.historyReader.getSessionMessagesAsJson(sessionId);
-        if (messagesJson == null) {
+    private List<JsonObject> getLegacySessionMessages(String sessionId, String cwd, BooleanSupplier cancellation,
+                                                      boolean strict) {
+        try {
+            JsonArray historyItems = new JsonArray();
+            historyReader.forEachSessionMessage(sessionId, cancellation, historyItems::add);
+            if (cancellation.getAsBoolean()) {
+                throw new CancellationException("History loading was cancelled");
+            }
+            return HistoryMessageInjector.convertCodexMessagesToFrontendBatch(historyItems);
+        } catch (CancellationException e) {
+            throw e;
+        } catch (java.nio.file.NoSuchFileException missing) {
             throw new SessionHistoryNotFoundException(sessionId, cwd);
+        } catch (Exception e) {
+            if (!strict) {
+                // Ordinary loads keep the legacy contract: an unreadable rollout reads as an empty transcript.
+                LOG.warn("Failed to read Codex session history: " + e.getMessage());
+                return List.of();
+            }
+            throw new IllegalStateException("Failed to load Codex session history", e);
         }
-        JsonArray items = this.gson.fromJson(messagesJson, JsonArray.class);
-        return items == null ? List.of() : HistoryMessageInjector.convertCodexMessagesToFrontendBatch(items);
     }
 
     private static boolean hasHistoryBlock(List<JsonObject> messages, String type) {
@@ -1417,6 +1624,12 @@ public class CodexSDKBridge extends BaseSDKBridge {
             raw = raw.getAsJsonObject("message");
         }
         return raw.has("content") && raw.get("content").isJsonArray() ? raw.getAsJsonArray("content") : new JsonArray();
+    }
+
+    private static void checkHistoryCancellation(BooleanSupplier cancellation) {
+        if (cancellation.getAsBoolean()) {
+            throw new CancellationException("History loading was cancelled");
+        }
     }
 
     /**
@@ -1569,7 +1782,7 @@ public class CodexSDKBridge extends BaseSDKBridge {
                 // Add to result array in Codex SDK format
                 JsonObject imageEntry = new JsonObject();
                 imageEntry.addProperty("type", "local_image");
-                imageEntry.addProperty("path", imagePath.toAbsolutePath().toString());
+                imageEntry.addProperty("path", normalizePathForNode(imagePath.toAbsolutePath().toString()));
                 result.add(imageEntry);
 
             } catch (Exception e) {
@@ -1647,8 +1860,12 @@ public class CodexSDKBridge extends BaseSDKBridge {
     }
 
     private static String resolveOwnerScope() {
-        String codexHome = System.getenv("CODEX_HOME");
-        return codexHome == null || codexHome.trim().isEmpty() ? "default" : codexHome.trim();
+        Path home = com.github.claudecodegui.util.CodexHomeResolver.resolve();
+        try {
+            return home.toRealPath().toString();
+        } catch (java.io.IOException error) {
+            return home.toString();
+        }
     }
 
     /**

@@ -5,6 +5,9 @@ import { PermissionDialogTimeoutSetting } from './PermissionDialogTimeoutSetting
 import { ToggleSettingSection } from './ToggleSettingSection';
 import { SendShortcutSection } from './SendShortcutSection';
 import { NotificationSettingsGroup } from './NotificationSettingsGroup';
+import { HistoryLoadTimeoutSetting } from './HistoryLoadTimeoutSetting';
+import { DEFAULT_HISTORY_LOAD_TIMEOUT_SECONDS } from '../../../utils/historyLoadTimeout';
+import { MarkdownReviewSettings } from './MarkdownReviewSettings';
 
 export interface BehaviorTabProps {
   sendShortcut?: 'enter' | 'cmdEnter';
@@ -13,6 +16,10 @@ export interface BehaviorTabProps {
   onStreamingEnabledChange?: (enabled: boolean) => void;
   autoOpenFileEnabled?: boolean;
   onAutoOpenFileEnabledChange?: (enabled: boolean) => void;
+  loadHistoryOnStartup?: boolean;
+  onLoadHistoryOnStartupChange?: (enabled: boolean) => void;
+  historyLoadTimeoutSeconds?: number;
+  onHistoryLoadTimeoutChange?: (seconds: number) => void;
   diffExpandedByDefault?: boolean;
   onDiffExpandedByDefaultChange?: (enabled: boolean) => void;
   bashGroupCollapsedByDefault?: boolean;
@@ -21,6 +28,8 @@ export interface BehaviorTabProps {
   onEditGroupCollapsedByDefaultChange?: (collapsed: boolean) => void;
   commitGenerationEnabled?: boolean;
   onCommitGenerationEnabledChange?: (enabled: boolean) => void;
+  sessionGitRepositoryMatchingEnabled?: boolean;
+  onSessionGitRepositoryMatchingEnabledChange?: (enabled: boolean) => void;
   statusBarWidgetEnabled?: boolean;
   onStatusBarWidgetEnabledChange?: (enabled: boolean) => void;
   aiTitleGenerationEnabled?: boolean;
@@ -65,6 +74,10 @@ const BehaviorTab = ({
   onStreamingEnabledChange = () => {},
   autoOpenFileEnabled = true,
   onAutoOpenFileEnabledChange = () => {},
+  loadHistoryOnStartup = true,
+  onLoadHistoryOnStartupChange = () => {},
+  historyLoadTimeoutSeconds = DEFAULT_HISTORY_LOAD_TIMEOUT_SECONDS,
+  onHistoryLoadTimeoutChange = () => {},
   diffExpandedByDefault = false,
   onDiffExpandedByDefaultChange = () => {},
   bashGroupCollapsedByDefault = false,
@@ -73,6 +86,8 @@ const BehaviorTab = ({
   onEditGroupCollapsedByDefaultChange = () => {},
   commitGenerationEnabled = true,
   onCommitGenerationEnabledChange = () => {},
+  sessionGitRepositoryMatchingEnabled = false,
+  onSessionGitRepositoryMatchingEnabledChange = () => {},
   statusBarWidgetEnabled = true,
   onStatusBarWidgetEnabledChange = () => {},
   aiTitleGenerationEnabled = true,
@@ -140,7 +155,25 @@ const BehaviorTab = ({
         hint={t('settings.basic.autoOpenFile.hint')}
       />
 
+      {/* Persisted session history loading configuration */}
+      <ToggleSettingSection
+        icon="codicon-history"
+        label={t('settings.basic.loadHistoryOnStartup.label')}
+        checked={loadHistoryOnStartup}
+        onChange={onLoadHistoryOnStartupChange}
+        enabledLabel={t('settings.basic.loadHistoryOnStartup.enabled')}
+        disabledLabel={t('settings.basic.loadHistoryOnStartup.disabled')}
+        hint={t('settings.basic.loadHistoryOnStartup.hint')}
+      />
+
+      <HistoryLoadTimeoutSetting
+        seconds={historyLoadTimeoutSeconds}
+        onChange={onHistoryLoadTimeoutChange}
+      />
+
       {/* Diff expanded by default configuration */}
+      <MarkdownReviewSettings />
+
       <ToggleSettingSection
         icon="codicon-diff"
         label={t('settings.basic.diffExpanded.label')}
@@ -249,6 +282,16 @@ const BehaviorTab = ({
         onSystemNotificationOnlyWhenUnfocusedChange={onSystemNotificationOnlyWhenUnfocusedChange}
         askUserQuestionSoundNotificationEnabled={askUserQuestionSoundNotificationEnabled}
         onAskUserQuestionSoundNotificationEnabledChange={onAskUserQuestionSoundNotificationEnabledChange}
+      />
+
+      <ToggleSettingSection
+        icon="codicon-repo"
+        label={t('settings.basic.sessionGitRepositoryMatching.label')}
+        checked={sessionGitRepositoryMatchingEnabled}
+        onChange={onSessionGitRepositoryMatchingEnabledChange}
+        enabledLabel={t('settings.basic.sessionGitRepositoryMatching.enabled')}
+        disabledLabel={t('settings.basic.sessionGitRepositoryMatching.disabled')}
+        hint={t('settings.basic.sessionGitRepositoryMatching.hint')}
       />
     </div>
   );

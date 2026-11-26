@@ -13,7 +13,7 @@
  * and launch `.cmd`/`.bat` via `cmd.exe /d /s /c` (see `resolveCliSpawn`).
  */
 
-import { existsSync, readdirSync, realpathSync } from 'fs';
+import { existsSync, readdirSync, realpathSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname, isAbsolute, win32 as pathWin32 } from 'path';
 import { execFileSync, execSync } from 'child_process';
@@ -43,6 +43,66 @@ export function isWindowsCmdShim(bin) {
 }
 
 /**
+ * Detect a Windows `.cmd`/`.bat` shim whose delegation target no longer
+ * exists — e.g. an old install dir left on PATH whose `minimax.cmd` still
+ * invokes a removed `"D:\npm-global\mcode.cmd"`. Spawning such a shim makes
+ * cmd.exe print a localized "file not found" and exit 1, which surfaces as an
+ * opaque send error, so CLI discovery skips these candidates.
+ *
+ * Only a confident answer counts as dead: when the script has exactly ONE
+ * delegation line (a line that forwards `%*`) carrying a quoted absolute
+ * path with a runnable extension, that path is the delegation target — installers append the real
+ * invocation last. Restricting the scan to `%*` lines keeps a trailing REM
+ * comment from making a working shim look dead, and requiring exactly one
+ * such line keeps an `if exist "new" (...) else ("old" ...)` fallback chain
+ * (two `%*` lines, conditionally dispatched) unjudgeable — statically you
+ * cannot know which branch runs, so the shim is assumed alive.
+ * `%~dp0` resolves against the shim's own directory; any other unresolved
+ * `%VAR%` means the target cannot be verified statically, so the shim is
+ * assumed alive. Scripts without a quoted absolute target are alive too.
+ *
+ * @param {string} bin - candidate shim path
+ * @param {object} [options]
+ * @param {boolean} [options.forceWindows] - test hook; defaults to win32
+ * @returns {boolean} true only when the shim provably delegates to a
+ *   missing file
+ */
+const SHIM_TARGET_EXT = /\.(exe|cmd|bat|com|js|mjs|cjs|ps1)$/i;
+
+export function isDeadCmdShim(bin, { forceWindows = process.platform === 'win32' } = {}) {
+  if (!forceWindows || typeof bin !== 'string') return false;
+  const trimmed = stripOuterQuotes(bin).trim();
+  if (!/\.(cmd|bat)$/i.test(trimmed)) return false;
+  let content;
+  try {
+    content = readFileSync(trimmed, 'utf8');
+  } catch {
+    // Missing or unreadable: let the spawn produce the real error instead of
+    // silently dropping the candidate.
+    return false;
+  }
+  let quotedTarget = null;
+  let delegationLines = 0;
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.includes('%*')) continue;
+    // Only quoted paths with a runnable extension can be the target: an
+    // extensionless one gets PATHEXT at run time (existsSync does not), and a
+    // data-dir argument after the program may simply not exist yet.
+    const quoted = (line.match(/"((?:[A-Za-z]:\\|%~dp0)[^"\r\n]+)"/g) || [])
+      .filter((token) => SHIM_TARGET_EXT.test(token.slice(1, -1)));
+    if (quoted.length === 0) continue;
+    delegationLines += 1;
+    if (delegationLines > 1) break; // conditional dispatch — unjudgeable
+    quotedTarget = quoted[quoted.length - 1];
+  }
+  if (!quotedTarget || delegationLines !== 1) return false;
+  const shimDir = pathWin32.dirname(trimmed);
+  const target = quotedTarget.slice(1, -1).replace(/%~dp0/gi, shimDir.endsWith('\\') ? shimDir : `${shimDir}\\`);
+  if (/%[^%]*%/.test(target)) return false;
+  return !pathExists(target);
+}
+
+/**
  * Quote one argv token for `cmd.exe /s /c`. Doubles quotes and percents so a
  * spaced path or a `%VAR%` fragment cannot be re-parsed / expanded.
  * @param {unknown} value
@@ -50,6 +110,210 @@ export function isWindowsCmdShim(bin) {
  */
 export function quoteCmdArg(value) {
   return `"${String(value ?? '').replace(/%/g, '%%').replace(/"/g, '""')}"`;
+}
+
+/** JavaScript entry extensions a Node-based npm shim delegates to. */
+const SHIM_JS_EXT = /\.(js|mjs|cjs)$/i;
+/** Native binaries npm shims delegate to when the published bin has no shebang. */
+const SHIM_NATIVE_EXT = /\.exe$/i;
+/** npm's runtime assignment: `SET "_prog=<shim dir>\node.exe"` or `SET "_prog=node"`. */
+const SHIM_PROG_RE = /^\s*SET\s+"?_prog=([^"\r\n]+)"?\s*$/i;
+/** A delegate target is an absolute drive path or npm's `%dp0%` / legacy `%~dp0` form. */
+const SHIM_TARGET_PREFIX = /^(?:[A-Za-z]:\\|%dp0%|%~dp0)/i;
+/** A native delegation line is exactly `"<target>" %*` (cmd-shim, no `_prog`). */
+const SHIM_NATIVE_LINE_RE = /^\s*"([^"]+)"\s+%\*\s*$/;
+/** What cmd-shim 4-8 writes before `"%_prog%"` on the delegation line (cmd-shim 3 writes nothing). */
+const SHIM_NODE_LINE_PREFIX = 'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & ';
+/**
+ * Every other line npm's cmd-shim writes (cmd-shim 3 for npm 6, cmd-shim 4-8 for
+ * npm 7+). A shim with any other line is a hand-written wrapper (`set HTTPS_PROXY=...`,
+ * `cd /d ...`): spawning its target directly would skip that setup, so it stays on cmd.exe.
+ */
+const SHIM_BOILERPLATE_LINES = [
+  /^$/,
+  /^@ECHO off$/i,
+  /^GOTO start$/i,
+  /^:start$/i,
+  /^:find_dp0$/i,
+  /^SET dp0=%~dp0$/i,
+  /^EXIT \/b(?: %errorlevel%)?$/i,
+  /^SETLOCAL$/i,
+  /^ENDLOCAL$/i,
+  /^CALL :find_dp0$/i,
+  /^IF EXIST "[^"]+" \($/i,
+  /^\) ELSE \($/i,
+  /^\)$/,
+  /^SET PATHEXT=%PATHEXT:;\.JS;=;%$/i,
+];
+
+/** True for a cmd-shim line: boilerplate, a `_prog` assignment, or a `%*` delegation line. */
+function isCmdShimLine(line) {
+  const trimmed = line.trim();
+  return trimmed.includes('%*')
+    || SHIM_PROG_RE.test(trimmed)
+    || SHIM_BOILERPLATE_LINES.some((re) => re.test(trimmed));
+}
+
+/**
+ * @typedef {{ kind: 'node', entry: string, nodeCommand: string }
+ *   | { kind: 'native', file: string }} CmdShimTarget
+ */
+
+/** True when an npm shim's `_prog` runtime is Node (`node` / `node.exe`). */
+function isNodeProgram(program) {
+  const trimmed = program.trim().replace(/^"+|"+$/g, '');
+  if (!trimmed) return false;
+  return /(?:^|[\\/])node(?:\.exe)?$/i.test(trimmed);
+}
+
+/**
+ * True when the shim's target is a Node entry: a `.js`/`.mjs`/`.cjs` file, or an
+ * extensionless script whose shebang runs Node (npm published `bin/opencode`
+ * that way up to opencode-ai 1.15.0).
+ */
+function isNodeEntry(entry) {
+  if (SHIM_JS_EXT.test(entry)) return true;
+  try {
+    const firstLine = readFileSync(entry, 'utf8').split(/\r?\n/, 1)[0] || '';
+    return /^#!.*\bnode(?:\.exe)?\b/i.test(firstLine) && !/\bbun\b/i.test(firstLine);
+  } catch {
+    return false;
+  }
+}
+
+/** Split a cmd command tail into quoted/unquoted tokens. */
+function tokenizeCmdLine(text) {
+  return text.match(/"[^"]*"|\S+/g) || [];
+}
+
+/**
+ * Expand `%dp0%` / `%~dp0` in a shim token and normalize separators.
+ *
+ * npm writes `%dp0%\node_modules\...` while `dp0` already ends in a separator, so
+ * the raw expansion contains a doubled separator.
+ *
+ * @param {string} raw shim token
+ * @param {string} shimPath shim path, whose directory replaces `dp0`
+ * @returns {string|null} normalized absolute path, or null when another `%VAR%` remains
+ */
+function expandShimPath(raw, shimPath) {
+  const shimDir = pathWin32.dirname(shimPath);
+  const shimDirWithSlash = shimDir.endsWith('\\') ? shimDir : `${shimDir}\\`;
+  const expanded = raw
+    .replace(/%~dp0/gi, shimDirWithSlash)
+    .replace(/%dp0%/gi, shimDirWithSlash);
+  if (/%[^%]*%/.test(expanded)) return null;
+  return pathWin32.normalize(expanded);
+}
+
+/**
+ * The runtime the shim would use: `<shim dir>\node.exe` when npm copied one next
+ * to the shim, otherwise bare `node` from PATH.
+ *
+ * The caller prepends the shim directory to PATH, matching the cmd path, so a
+ * bare `node` resolves to the same runtime the shim would pick. Using the
+ * plugin's own Node here would break CLIs installed under a different major
+ * version (Pi declares `engines.node >= 20.6.0`).
+ */
+function resolveNodeCommand(programs, shimPath) {
+  for (const program of programs) {
+    const expanded = expandShimPath(program.trim().replace(/^"+|"+$/g, ''), shimPath);
+    if (expanded && /(?:^|[\\/])node\.exe$/i.test(expanded) && existsSync(expanded)) {
+      return expanded;
+    }
+  }
+  return 'node';
+}
+
+/** Extract the single `"%_prog%" "<target>" %*` delegation target. */
+function nodeDelegationTarget(lines) {
+  const progToken = '"%_prog%"';
+  let target = null;
+  let delegationLines = 0;
+  for (const line of lines) {
+    if (!line.includes('%*')) continue;
+    const progIndex = line.indexOf(progToken);
+    // Every `%*` line must be the cmd-shim runtime call; anything in front of
+    // `"%_prog%"` other than cmd-shim's own prefix is a command we would skip.
+    if (progIndex < 0) return null;
+    const lead = line.slice(0, progIndex).trimStart();
+    if (lead && lead !== SHIM_NODE_LINE_PREFIX) return null;
+    const tokens = tokenizeCmdLine(line.slice(progIndex + progToken.length));
+    // Exactly `<quoted target> %*`: a flag between the runtime and the target
+    // (`"%_prog%" --no-warnings "entry" %*`) cannot be reproduced here.
+    if (tokens.length !== 2 || tokens[1] !== '%*') return null;
+    const quotedTarget = tokens[0];
+    if (!quotedTarget.startsWith('"') || !quotedTarget.endsWith('"')) return null;
+    if (!SHIM_TARGET_PREFIX.test(quotedTarget.slice(1, -1))) return null;
+    delegationLines += 1;
+    if (delegationLines > 1) return null;
+    target = quotedTarget.slice(1, -1);
+  }
+  return delegationLines === 1 ? target : null;
+}
+
+/**
+ * Resolve what a Windows npm-style `.cmd`/`.bat` shim delegates to, so a caller
+ * can spawn it directly instead of building a `cmd.exe` command line.
+ *
+ * cmd.exe receives one command-line string and a line break inside it ends the
+ * command, so a multi-line prompt passed as an argument is silently truncated
+ * at the first newline (the cmd path in `resolveCliSpawn` cannot carry it).
+ *
+ * Two shapes follow what npm's cmd-shim actually writes (npm 11 / cmd-shim 8):
+ * - a Node bin: `SET "_prog=%dp0%\node.exe"` / `SET "_prog=node"` plus
+ *   `"%_prog%"  "%dp0%\node_modules\...\bin\entry" %*`;
+ * - a native bin with no shebang: `"%dp0%\node_modules\...\bin\tool.exe"   %*`
+ *   (opencode-ai >= 1.15.1 publishes such a binary).
+ *
+ * Everything is rejected unless the shape is unambiguous — a relative shim
+ * path, any line cmd-shim does not write (a user wrapper's own setup), a non-Node
+ * runtime (bun/deno), a shebang flag between the runtime and the target,
+ * conditional dispatch, an unresolved `%VAR%`, or a target that is neither a
+ * Node script nor an `.exe`.
+ *
+ * @param {string} bin - shim path (quotes already stripped)
+ * @returns {CmdShimTarget|null} delegate descriptor, or null when unresolved
+ */
+export function resolveCmdShimTarget(bin) {
+  if (typeof bin !== 'string' || !/\.(cmd|bat)$/i.test(bin.trim())) return null;
+  const shimPath = bin.trim();
+  // A bare `tool.cmd` is found via the child's cwd/PATH, not this process's cwd.
+  if (!pathWin32.isAbsolute(shimPath)) return null;
+  let content;
+  try {
+    content = readFileSync(shimPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const lines = content.split(/\r?\n/);
+  if (!lines.every(isCmdShimLine)) return null;
+  const programs = lines
+    .map((line) => SHIM_PROG_RE.exec(line))
+    .filter((match) => match !== null)
+    .map((match) => match[1]);
+
+  if (programs.length > 0) {
+    // npm sets the runtime in an IF/ELSE pair; every assignment must point at
+    // Node, otherwise the fast path would run a bun/deno entry under Node.
+    if (!programs.every(isNodeProgram)) return null;
+    const target = nodeDelegationTarget(lines);
+    if (!target) return null;
+    const entry = expandShimPath(target, shimPath);
+    if (!entry || !existsSync(entry) || !isNodeEntry(entry)) return null;
+    return { kind: 'node', entry, nodeCommand: resolveNodeCommand(programs, shimPath) };
+  }
+
+  // Native shim: no runtime is selected; cmd-shim emits one `"<exe>" %*` line.
+  const delegationLines = lines.filter((line) => line.includes('%*'));
+  if (delegationLines.length !== 1) return null;
+  const nativeLine = SHIM_NATIVE_LINE_RE.exec(delegationLines[0]);
+  if (!nativeLine) return null;
+  const rawTarget = nativeLine[1];
+  if (!SHIM_TARGET_PREFIX.test(rawTarget)) return null;
+  const file = expandShimPath(rawTarget, shimPath);
+  if (!file || !SHIM_NATIVE_EXT.test(file) || !existsSync(file)) return null;
+  return { kind: 'native', file };
 }
 
 function prependPathDir(env, dir) {
@@ -74,8 +338,15 @@ function prependPathDir(env, dir) {
  * command again (`cmd /s /c "…"`), and a second quote pair becomes `""C:\Program`.
  *
  * Instead, launch `cmd.exe /d /s /c` ourselves with `windowsVerbatimArguments`
- * and invoke the shim by **basename** after prepending its directory to PATH.
- * That keeps spaces out of the command token entirely.
+ * and invoke the shim by its **quoted full path** after prepending its
+ * directory to PATH. The full path is required, not cosmetic: a batch executed
+ * via a PATH lookup by bare name receives `%0` as typed, so `%~dp0` inside the
+ * script expands to the child process's CWD instead of the script's own
+ * directory — every `%~dp0`-based launcher (npm shims, the mcode release
+ * manager reading `<"%~dp0current"`) then reads its sibling files from the
+ * wrong place and dies with cmd's localized "file not found" + exit 1.
+ * `/s` strips exactly the outer quote pair, so the quoted single token
+ * survives spaces and parentheses in the path.
  *
  * @param {string} bin
  * @param {string[]} [args]
@@ -97,15 +368,42 @@ export function resolveCliSpawn(
   const needsCmd = isShim || (forceWindows && Boolean(redirectTo));
 
   if (needsCmd) {
+    // cmd.exe ends the command at an embedded line break, so a multi-line prompt
+    // reaches the CLI truncated at its first newline — OpenCode and Pi pass the
+    // prompt as an argument. Spawn the shim's delegate directly instead:
+    // CreateProcess passes argv with newlines intact. A redirected command must
+    // stay on cmd.exe — the redirect lives in that line.
+    if (!redirectTo && isShim && args.some((arg) => typeof arg === 'string' && /[\r\n]/.test(arg))) {
+      const shimTarget = resolveCmdShimTarget(normalized);
+      if (shimTarget) {
+        // Same PATH as the cmd path below: the shim directory leads, so a bare
+        // `node` resolves to the runtime the shim itself would pick.
+        const env = prependPathDir(
+          { ...(options.env || process.env) },
+          pathWin32.dirname(normalized),
+        );
+        const direct = shimTarget.kind === 'node'
+          ? { file: shimTarget.nodeCommand, args: [shimTarget.entry, ...args] }
+          : { file: shimTarget.file, args };
+        return {
+          ...direct,
+          options: {
+            ...options,
+            env,
+            shell: false,
+            windowsHide: options.windowsHide !== false,
+          },
+        };
+      }
+    }
     const looksLikePath = pathWin32.isAbsolute(normalized) || /[\\/]/.test(normalized);
-    // Invoke shims by basename so `C:\Program Files\...` never appears as the
-    // command token. Keep the full path for real `.exe` binaries.
-    const invokeName = isShim && looksLikePath ? pathWin32.basename(normalized) : normalized;
     const env = prependPathDir(
       { ...(options.env || process.env) },
       looksLikePath ? pathWin32.dirname(normalized) : '',
     );
-    let command = [invokeName, ...args].map(quoteCmdArg).join(' ');
+    // See the doc block: the shim MUST be invoked by its quoted full path —
+    // a bare-name PATH lookup leaves %~dp0 pointing at the child's CWD.
+    let command = [normalized, ...args].map(quoteCmdArg).join(' ');
     if (redirectTo) command += ` > ${quoteCmdArg(redirectTo)}`;
     return {
       file: env.ComSpec || env.COMSPEC || process.env.ComSpec || 'cmd.exe',
@@ -133,15 +431,25 @@ export function resolveCliSpawn(
 /**
  * Decode CLI stdout/stderr. Windows `cmd` often emits GBK/CP936, which Node
  * turns into U+FFFD replacement characters when forced to UTF-8.
+ *
+ * The GBK retry is win32-only: a U+FFFD elsewhere is genuine broken output
+ * (binary, truncation), and re-decoding it as GBK garbles correct UTF-8. It
+ * also must only run on a COMPLETE buffer — a multi-byte character split
+ * across stream chunk boundaries makes every chunk contain U+FFFD, so the
+ * per-chunk retry would mis-decode healthy UTF-8 streams (see runCliStreaming,
+ * which feeds the decoder whole tails, not chunks).
+ *
  * @param {string|Buffer|null|undefined} value
+ * @param {object} [options]
+ * @param {boolean} [options.forceWindows] - test hook; defaults to win32
  * @returns {string}
  */
-export function decodeCliOutput(value) {
+export function decodeCliOutput(value, { forceWindows = process.platform === 'win32' } = {}) {
   if (value == null) return '';
   if (typeof value === 'string') return value;
   const buf = Buffer.isBuffer(value) ? value : Buffer.from(value);
   const utf8 = buf.toString('utf8');
-  if (!utf8.includes('\uFFFD')) return utf8;
+  if (!forceWindows || !utf8.includes('\uFFFD')) return utf8;
   for (const label of ['gbk', 'gb18030']) {
     try {
       return new TextDecoder(label).decode(buf);
@@ -278,48 +586,6 @@ export function whichViaLoginShell(binaryName, shellOverride, env = process.env)
   }
 }
 
-function whichOnPath(binaryName, env = process.env) {
-  try {
-    if (process.platform === 'win32') {
-      // Prefer execFile so the binary name is not re-parsed by a shell.
-      // `where` lists every PATHEXT match; the extensionless npm shim is often first
-      // and cannot be spawned — selectWindowsWhereMatch prefers .cmd/.exe.
-      let output;
-      try {
-        output = execFileSync('where.exe', [binaryName], {
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-          env,
-          windowsHide: true,
-        });
-      } catch {
-        // Fallback for systems where where.exe is not on PATH of the IDE process.
-        output = execSync(`where ${binaryName}`, {
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-          env,
-          windowsHide: true,
-        });
-      }
-      const lines = String(output || '').split(/\r?\n/);
-      return selectWindowsWhereMatch(lines);
-    }
-
-    const output = execFileSync('which', [binaryName], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env,
-    });
-    const first = String(output || '')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean);
-    return first || null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * npm global installs on Windows ship `.cmd` shims, not `.exe`.
  * @param {string} binaryName
@@ -332,9 +598,9 @@ function candidateExeNames(binaryName) {
 }
 
 /**
- * Every PATH match for `binaryName` in discovery order. Unlike
- * {@link whichOnPath}, the whole list survives: an earlier, broken install must
- * not hide a later, working one (`which -a` / `where` list both).
+ * Every PATH match for `binaryName` in discovery order. The whole list
+ * survives: an earlier, broken install must not hide a later, working one
+ * (`which -a` / `where` list both).
  *
  * @param {string} binaryName
  * @param {NodeJS.ProcessEnv} [env] - environment whose PATH drives the lookup
@@ -430,7 +696,7 @@ export function listCliCandidates({ binaryName, envKeys = [], homeCandidates = [
   }
 
   for (const fromPath of whichAllOnPath(binaryName, env)) {
-    if (pathExists(fromPath)) push(fromPath);
+    if (pathExists(fromPath) && !isDeadCmdShim(fromPath)) push(fromPath);
   }
 
   const home = homedir();
@@ -441,19 +707,23 @@ export function listCliCandidates({ binaryName, envKeys = [], homeCandidates = [
         .replace('{localAppData}', env.LOCALAPPDATA || join(home, 'AppData', 'Local'))
         .replace('{bin}', exeName)
         .replace('{name}', binaryName);
-      if (pathExists(resolved)) push(resolveWindowsSpawnableBin(resolved));
+      const spawnable = resolveWindowsSpawnableBin(resolved);
+      if (pathExists(spawnable) && !isDeadCmdShim(spawnable)) push(spawnable);
     }
   }
 
   for (const dir of commonCliBinDirs(home, env)) {
     for (const exeName of exeNames) {
       const resolved = join(dir, exeName);
-      if (pathExists(resolved)) push(resolveWindowsSpawnableBin(resolved));
+      if (pathExists(resolved) && !isDeadCmdShim(resolved)) push(resolveWindowsSpawnableBin(resolved));
     }
   }
 
   const fromShell = whichViaLoginShell(binaryName, undefined, env);
-  if (fromShell) push(resolveWindowsSpawnableBin(fromShell));
+  if (fromShell) {
+    const spawnable = resolveWindowsSpawnableBin(fromShell);
+    if (!isDeadCmdShim(spawnable)) push(spawnable);
+  }
 
   return candidates;
 }
@@ -477,8 +747,10 @@ export function resolveCliPath({ binaryName, envKeys = [], homeCandidates = [], 
   }
 
   // `where <name>` (no extension) honors PATHEXT; we then prefer .cmd/.exe.
-  const fromPath = whichOnPath(binaryName, env);
-  if (fromPath) return resolveWindowsSpawnableBin(fromPath);
+  // A stale shim left on PATH by a removed install (isDeadCmdShim) is skipped
+  // so discovery falls through to the well-known install dirs below.
+  const aliveFromPath = whichAllOnPath(binaryName, env).find((c) => pathExists(c) && !isDeadCmdShim(c));
+  if (aliveFromPath) return resolveWindowsSpawnableBin(aliveFromPath);
 
   const home = homedir();
   for (const template of homeCandidates) {
@@ -488,7 +760,8 @@ export function resolveCliPath({ binaryName, envKeys = [], homeCandidates = [], 
         .replace('{localAppData}', env.LOCALAPPDATA || join(home, 'AppData', 'Local'))
         .replace('{bin}', exeName)
         .replace('{name}', binaryName);
-      if (pathExists(resolved)) return resolveWindowsSpawnableBin(resolved);
+      const spawnable = resolveWindowsSpawnableBin(resolved);
+      if (pathExists(spawnable) && !isDeadCmdShim(spawnable)) return spawnable;
     }
   }
 
@@ -498,7 +771,8 @@ export function resolveCliPath({ binaryName, envKeys = [], homeCandidates = [], 
   for (const dir of commonCliBinDirs(home, env)) {
     for (const exeName of exeNames) {
       const resolved = join(dir, exeName);
-      if (pathExists(resolved)) return resolveWindowsSpawnableBin(resolved);
+      const spawnable = resolveWindowsSpawnableBin(resolved);
+      if (pathExists(spawnable) && !isDeadCmdShim(spawnable)) return spawnable;
     }
   }
 
@@ -506,7 +780,10 @@ export function resolveCliPath({ binaryName, envKeys = [], homeCandidates = [], 
   // minimal PATH, so CLIs installed via nvm/fnm/mise/asdf or custom prefixes
   // only become visible once the login rc files are sourced.
   const fromShell = whichViaLoginShell(binaryName, undefined, env);
-  if (fromShell) return resolveWindowsSpawnableBin(fromShell);
+  if (fromShell) {
+    const spawnable = resolveWindowsSpawnableBin(fromShell);
+    if (!isDeadCmdShim(spawnable)) return spawnable;
+  }
 
   return binaryName;
 }
@@ -697,16 +974,28 @@ export function resolveKimiCliPath() {
   });
 }
 
-export function resolveOpenCodeCliPath() {
-  return resolveCliPath({
-    binaryName: 'opencode',
-    envKeys: ['OPENCODE_BIN', 'OPENCODE_PATH', 'OPENCODE_CLI_PATH'],
-    homeCandidates: [
-      '{home}/.opencode/bin/{bin}',
-      '{home}/.local/bin/{bin}',
-      '{home}/.local/share/opencode/bin/{bin}',
-    ],
-  });
+/**
+ * The npm / official installers expose `opencode`; the OpenCode desktop app
+ * ships its bundled CLI as `opencode-cli` (e.g. `opencode-cli.exe` on Windows).
+ * Try `opencode` first, then fall back to `opencode-cli`.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string}
+ */
+export function resolveOpenCodeCliPath(env = process.env) {
+  const envKeys = ['OPENCODE_BIN', 'OPENCODE_PATH', 'OPENCODE_CLI_PATH'];
+  const homeCandidates = [
+    '{home}/.opencode/bin/{bin}',
+    '{home}/.local/bin/{bin}',
+    '{home}/.local/share/opencode/bin/{bin}',
+  ];
+  const opencode = resolveCliPath({ binaryName: 'opencode', envKeys, env, homeCandidates });
+  if (opencode !== 'opencode') {
+    return opencode;
+  }
+  const desktopCli = resolveCliPath({ binaryName: 'opencode-cli', envKeys, env, homeCandidates });
+  // resolveCliPath returns the bare name when nothing resolved; keep `opencode`
+  // as the unresolved fallback so error messages stay unchanged.
+  return desktopCli !== 'opencode-cli' ? desktopCli : opencode;
 }
 
 export function resolvePiCliPath() {
@@ -761,4 +1050,14 @@ export function resolveMiniMaxCliPath() {
   // resolveCliPath returns the bare name when nothing resolved; prefer mcode's
   // result (it may be a real path) and only fall back to `minimax` at the very end.
   return mcode !== 'mcode' ? mcode : minimax;
+}
+
+export function resolveGeminiCliPath() {
+  return resolveCliPath({
+    binaryName: 'agy',
+    envKeys: ['GEMINI_BIN', 'GEMINI_PATH', 'GEMINI_CLI_PATH'],
+    homeCandidates: [
+      '{home}/.local/bin/{bin}',
+    ],
+  });
 }

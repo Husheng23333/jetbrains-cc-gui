@@ -9,12 +9,13 @@ import {
   buildSessionMessagesPayload,
   buildSessionMessagesPagePayload,
   extractSessionTitle,
+  forEachJsonlLineSync,
   getLatestUserMessage,
   isUserTextMessage,
   isInterruptionMarker,
   loadSessionHistory,
 } from './session-service.js';
-import { getClaudeProjectSessionFilePath } from '../../utils/path-utils.js';
+import { getClaudeProjectKey, getClaudeProjectSessionFilePath } from '../../utils/path-utils.js';
 
 
 test('persistJsonlMessage and loadSessionHistory keep using a legacy symlink-keyed session', () => {
@@ -691,5 +692,96 @@ test('buildSessionMessagesPayload ignores null JSONL entries as before', () => {
     assert.equal(result.messages.length, 1);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+
+test('forEachJsonlLineSync splits lines across chunk boundaries without corrupting multi-byte text', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-jsonl-lines-'));
+  try {
+    const file = path.join(dir, 'session.jsonl');
+    const rows = [
+      { text: 'привет, мир — 你好 🙂'.repeat(5) },
+      { text: '' },
+      { text: 'x'.repeat(100) },
+    ];
+    // Blank line in the middle and no trailing newline at the end.
+    const content = `${JSON.stringify(rows[0])}\n\n${JSON.stringify(rows[1])}\n${JSON.stringify(rows[2])}`;
+    fs.writeFileSync(file, content, 'utf8');
+
+    // Odd tiny chunk sizes force multi-byte characters and lines to straddle chunks.
+    for (const chunkBytes of [1, 3, 7, 64, 1024 * 1024]) {
+      const lines = [];
+      forEachJsonlLineSync(file, (line) => lines.push(line), chunkBytes);
+      assert.deepEqual(lines, content.split('\n'), `chunkBytes=${chunkBytes}`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildSessionMessagesPagePayload and buildSessionMessagesPayload read a transcript line by line', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-jsonl-page-'));
+  try {
+    const file = path.join(dir, 'session.jsonl');
+    const lines = [];
+    let parentUuid = null;
+    for (let i = 0; i < 40; i += 1) {
+      const userUuid = `u${i}`;
+      const assistantUuid = `a${i}`;
+      lines.push(JSON.stringify({ type: 'user', uuid: userUuid, parentUuid, message: { role: 'user', content: `вопрос ${i}` } }));
+      lines.push(JSON.stringify({ type: 'assistant', uuid: assistantUuid, parentUuid: userUuid, message: { role: 'assistant', content: [{ type: 'text', text: `ответ ${i}` }] } }));
+      parentUuid = assistantUuid;
+    }
+    fs.writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');
+
+    const page = buildSessionMessagesPagePayload(file, null, 30);
+    assert.equal(page.success, true);
+    assert.equal(page.totalTurns, 40);
+    assert.equal(page.messages.length, 60);
+    assert.equal(page.messages.at(-1).uuid, 'a39');
+
+    const full = buildSessionMessagesPayload(file);
+    assert.equal(full.success, true);
+    assert.equal(full.messages.length, 80);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('channel-manager getSession reads a custom profile only when CLAUDE_CONFIG_DIR reaches it', () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-profile-home-'));
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-profile-dir-'));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-gui-profile-cwd-'));
+  try {
+    const sessionId = 'profile-session';
+    const projectDir = path.join(profile, 'projects', getClaudeProjectKey(fs.realpathSync(cwd)));
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), [
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'profile prompt' } }),
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'profile answer' }] } }),
+    ].join('\n') + '\n');
+
+    const run = (extraEnv) => {
+      const env = { ...process.env, HOME: tempHome, USERPROFILE: tempHome };
+      delete env.CLAUDE_CONFIG_DIR;
+      Object.assign(env, extraEnv);
+      const output = execFileSync(
+        process.execPath,
+        [path.resolve('ai-bridge/channel-manager.js'), 'claude', 'getSession', sessionId, fs.realpathSync(cwd)],
+        { cwd: process.cwd(), env, encoding: 'utf8' },
+      );
+      return JSON.parse(output.trim().split('\n').filter(Boolean).pop());
+    };
+
+    const withProfile = run({ CLAUDE_CONFIG_DIR: profile });
+    assert.equal(withProfile.success, true);
+    assert.equal(JSON.stringify(withProfile.messages).includes('profile prompt'), true);
+    assert.equal(JSON.stringify(withProfile.messages).includes('profile answer'), true);
+
+    const withoutProfile = run({});
+    assert.equal(JSON.stringify(withoutProfile).includes('profile prompt'), false);
+  } finally {
+    for (const dir of [tempHome, profile, cwd]) fs.rmSync(dir, { recursive: true, force: true });
   }
 });

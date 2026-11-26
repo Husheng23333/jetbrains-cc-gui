@@ -1,4 +1,65 @@
 {
+  "startupHistory": {
+    "unloaded": "L’historique de cette session restaurée n’a pas encore été chargé.",
+    "loading": "Chargement de l’historique…",
+    "loaded_one": "{{count}} message chargé.",
+    "loaded_other": "{{count}} messages chargés.",
+    "missing": "L’historique enregistré n’est plus disponible. Une nouvelle session est prête.",
+    "timeout": "Le chargement a expiré. Cliquez sur Réessayer.",
+    "cancelled": "Le chargement a été annulé. Cliquez sur Réessayer.",
+    "failed": "Le chargement a échoué. Cliquez sur Réessayer.",
+    "superseded": "Une activité plus récente a interrompu le chargement. Cliquez sur Réessayer pour le charger.",
+    "load": "Charger l’historique",
+    "retry": "Réessayer",
+    "cancel": "Annuler"
+  },
+  "markdownReview": {
+    "legacyContextCard": "Contexte de revue Markdown",
+    "contextCard_one": "Revue Markdown · {{count}} élément",
+    "contextCard_other": "Revue Markdown · {{count}} éléments",
+    "contextDetails": "Instantané de la source et référence",
+    "settings": {
+      "submitShortcut": {
+        "label": "Raccourci d’envoi des commentaires Markdown",
+        "enter": "Entrée envoie, Ctrl+Entrée insère un saut de ligne",
+        "ctrlEnter": "Ctrl+Entrée envoie, Entrée insère un saut de ligne",
+        "hint": "S’applique à l’ajout et à l’enregistrement des commentaires. Maj+Entrée insère toujours un saut de ligne ; utilisez Commande sur macOS. La validation de la méthode de saisie n’envoie pas."
+      },
+      "title": "Revues Markdown (projet actuel)",
+      "on": "Activé",
+      "off": "Désactivé",
+      "error": "Impossible de mettre à jour les préférences de revue. Rouvrez les paramètres et réessayez.",
+      "enabled": {
+        "label": "Activer les annotations de l’aperçu Markdown (bêta)",
+        "hint": "Ajoute des contrôles de revue à l’aperçu Markdown natif du projet actuel. La désactivation masque immédiatement la surcouche et conserve les commentaires. Après activation, un aperçu déjà ouvert doit être rouvert une fois pour afficher les contrôles."
+      },
+      "autoAddToChat": {
+        "label": "Ajouter automatiquement les commentaires au brouillon du chat (bêta)",
+        "hint": "Désactivé par défaut. Créer ou modifier un commentaire ajoute son dernier instantané à la saisie du chat CC GUI sélectionné. Vérifiez le brouillon avant l’envoi. Terminer ou supprimer un commentaire retire aussi son brouillon ajouté automatiquement ; les commentaires ajoutés manuellement et les citations sont conservés."
+      },
+      "autoDeleteAffected": {
+        "label": "Supprimer automatiquement les commentaires introuvables (bêta)",
+        "hint": "Un commentaire est conservé avec la mention « Source modifiée » tant que le début ou la fin de la citation reste localisable ; une modification ou un saut de ligne ne le supprime pas. Il n'est supprimé que lorsqu'aucun fragment n'est localisable. Les sélections formatées peuvent couvrir tout un bloc source. Le nettoyage ne prouve pas l'achèvement : l'agent doit signaler les éléments inachevés. Les brouillons ajoutés automatiquement sont retirés avec le commentaire supprimé ; les ajouts manuels et les citations restent intacts."
+      },
+      "persist": {
+        "label": "Conserver commentaires et instantanés en attente après redémarrage (bêta)",
+        "hint": "Désactivé par défaut : les données ne sont conservées que pendant l’ouverture du projet. Activez pour enregistrer dans l’espace de travail du projet. La désactivation supprime le contenu enregistré à la prochaine sauvegarde de l’IDE et conserve les commentaires actifs. Les messages du chat utilisent leur stockage existant. Lorsque l’option est désactivée, les commentaires et brouillons non envoyés sont perdus à la fermeture du projet ou au redémarrage de l’IDE."
+      },
+      "versionRequired": "Les annotations Markdown nécessitent IntelliJ IDEA 2024.3 ou une version ultérieure."
+    },
+    "count_one": "{{count}} élément de revue",
+    "count_other": "{{count}} éléments de revue",
+    "removeBatch": "Retirer la revue du brouillon",
+    "remove": "Retirer",
+    "snapshot": "Ce brouillon est un instantané ; les modifications ultérieures des commentaires source ne l’affectent pas.",
+    "tooLarge": "Cette revue est trop volumineuse. Retirez des éléments avant l’envoi.",
+    "block": "Bloc source",
+    "source": "Texte sélectionné",
+    "quote": "Citation",
+    "attached": "Localisé",
+    "ambiguous": "Emplacements multiples possibles",
+    "orphaned": "Texte d’origine modifié"
+  },
   "common": {
     "ready": "Prêt",
     "loading": "Chargement",
@@ -26,6 +87,18 @@
     "optional": "Optional"
   },
   "chat": {
+    "planUsage": {
+      "unavailable": "Utilisation indisponible",
+      "dash": "Utilisation —",
+      "loading": "Chargement de l'utilisation…",
+      "tooltipWindow": "{{period}} {{percent}}%",
+      "tooltipWindowWithReset": "{{period}} {{percent}}% · réinitialise {{value}}",
+      "clickToSwitch": "Cliquez pour changer de période",
+      "switchWindowHint": "Cliquez sur le libellé de période pour changer de fenêtre",
+      "worstHint": "Le point montre la pire fenêtre ({{color}})",
+      "worstDot": "Pire fenêtre : {{color}}",
+      "stale": "Les données peuvent être obsolètes (échec de l'actualisation)"
+    },
     "sendMessage": "Envoyer un message à {{provider}}",
     "createNewSession": "Créer une nouvelle session",
     "confirmNewSession": "La session actuelle contient des messages, êtes-vous sûr de vouloir créer une nouvelle session ?",
@@ -44,6 +117,17 @@
     "currentMode": "Mode actuel : {{mode}}",
     "currentModel": "Modèle actuel : {{model}}",
     "removeAttachment": "Supprimer la pièce jointe",
+    "queue": {
+      "edit": "Modifier le message en file d'attente",
+      "remove": "Retirer de la file d'attente",
+      "editLabel": "Modifier le message {{position}} en file d'attente",
+      "removeLabel": "Retirer le message {{position}} de la file d'attente",
+      "reorderLabel": "Réordonner le message {{position}}",
+      "reorderHint": "Faire glisser pour réordonner, ou utiliser les flèches après avoir mis le focus",
+      "mergedIntoDraft": "Le message en file d'attente a été ajouté au brouillon en cours",
+      "attachmentsNotRestored": "Les pièces jointes du message en file n ont pas été restaurées",
+      "editBlockedAttachments": "Ses pièces jointes ne peuvent pas être restaurées ici, le message reste dans la file d'attente"
+    },
     "closePreview": "Fermer l'aperçu",
     "loadingDropdown": "Chargement...",
     "modelsLoadFailed": "Échec du chargement des modèles. Cliquez pour réessayer",
@@ -81,6 +165,10 @@
     "localProject": "Local",
     "disabled": "Désactivé",
     "sdkNotInstalled": "{{provider}} SDK n'est pas installé. Veuillez installer le SDK pour commencer à discuter.",
+    "codexUltraCapabilitiesLoading": "Vérification de la disponibilité d’Ultra. Réessayez l’envoi après le chargement du modèle.",
+    "codexUltraCapabilitiesUnavailable": "Impossible de vérifier la disponibilité d’Ultra. Rechargez les modèles ou choisissez un autre niveau d’effort.",
+    "sessionTransitionTakingLonger": "Le changement de session prend plus de temps que prévu. Vous pouvez réessayer de l’ouvrir ; les messages en attente sont suspendus.",
+    "sessionTransitionInProgress": "Un changement de session est déjà en cours. Veuillez patienter.",
     "sdkStatusLoading": "Checking SDK status...",
     "pasteImagePreparing": "Préparation de l'image collée...",
     "sdkStatusUnavailable": "Impossible de vérifier l'état du SDK.",
@@ -102,6 +190,7 @@
     "totalDuration": "Cette réponse a pris",
     "tokenUsage": "{{input}} entrée / {{output}} sortie",
     "tokenUsageDetail": "Total du tour — entrée {{input}} · écriture cache {{cacheWrite}} · lecture cache {{cacheRead}} · sortie {{output}}",
+    "tokenUsageThinking": "Réflexion {{thinking}}",
     "cacheHitsWithRatio": " ({{tokens}} cache atteint, {{ratio}})",
     "search": {
       "ariaLabel": "Rechercher dans la conversation",
@@ -116,8 +205,7 @@
       "matchCase": "Respecter la casse (Alt+C)",
       "wholeWord": "Mot entier (Alt+W)",
       "regex": "Expression régulière (Alt+R)",
-      "invalidRegex": "Regex invalide",
-      "openTooltip": "Rechercher dans la conversation (Cmd/Ctrl+F)"
+      "invalidRegex": "Regex invalide"
     },
     "compactSummary": {
       "receivedTime": "Heure enregistrée",
@@ -144,8 +232,42 @@
     "codexReviewStarted": "Codex is reviewing the workspace",
     "codexDiffUsage": "Use /diff without arguments",
     "codexApprovalsUsage": "Use /approvals without arguments",
+    "codexCliOutdated": "Codex CLI {{version}} est obsolète ; certains modèles et modes d'autorisation peuvent ne pas fonctionner. Mettez à jour vers la version {{minimumVersion}} ou ultérieure.",
     "codexSandboxConflict": "Codex automatic review cannot use danger-full-access. Choose workspace-write or request approval.",
-    "continueRefiningPlan": "Continuer à affiner ce plan :"
+    "continueRefiningPlan": "Continuer à affiner ce plan :",
+    "backgroundTasksRunning": "{{count}} tâches en arrière-plan en cours",
+    "backgroundTasksRunning_one": "{{count}} tâche en arrière-plan en cours",
+    "backgroundTasksRunning_other": "{{count}} tâches en arrière-plan en cours",
+    "stopBackgroundTasks": "Arrêter les tâches en arrière-plan",
+    "backgroundTasksPill": "{{count}} tâches en arrière-plan",
+    "backgroundTasksPill_one": "{{count}} tâche en arrière-plan",
+    "backgroundTasksPill_other": "{{count}} tâches en arrière-plan",
+    "backgroundTasksTitle": "Tâches en arrière-plan",
+    "backgroundTasksActive": "{{count}} en cours",
+    "backgroundTasksActive_one": "{{count}} en cours",
+    "backgroundTasksActive_other": "{{count}} en cours",
+    "backgroundTasksStopAfterAnswer": "Arrêt possible après la réponse",
+    "backgroundTaskDetails": {
+      "type": "Type",
+      "taskId": "ID de tâche",
+      "runId": "ID d'exécution",
+      "parent": "Tâche parente",
+      "elapsed": "En cours depuis"
+    },
+    "backgroundTaskTypes": {
+      "local_bash": "Commande",
+      "local_agent": "Sous-agent",
+      "remote_agent": "Agent distant",
+      "local_workflow": "Workflow",
+      "in_process_teammate": "Coéquipier",
+      "monitor_mcp": "Moniteur",
+      "other": "Tâche"
+    },
+    "planUsage": {
+      "balanceLabel": "Solde : ",
+      "balanceRemaining": "Solde : {{value}}",
+      "balanceDetail": "Total {{total}} · Utilisé {{used}}"
+    }
   },
   "settings": {
     "title": "Paramètres",
@@ -192,6 +314,11 @@
         "label": "Chemin du CLI Claude (remplacement)",
         "placeholder": "ex. /usr/local/bin/claude — laissez vide pour utiliser le SDK intégré",
         "hint": "Facultatif. Lorsqu'il est défini, le plugin lance ce binaire au lieu du @anthropic-ai/claude-agent-sdk intégré. Le démon redémarre lors de l'enregistrement."
+      },
+      "claudeConfigDir": {
+        "label": "Répertoire de configuration de Claude (remplacement)",
+        "placeholder": "ex. ~/.claude-work — laissez vide pour utiliser CLAUDE_CONFIG_DIR ou ~/.claude",
+        "hint": "Facultatif. L'historique des discussions, les actions de session et le processus Claude lisent ce répertoire à la place de ~/.claude. Le settings.json et les serveurs MCP du plugin le suivent ; ses pages de compétences et de Hooks utilisent toujours ~/.claude. Les statistiques d'utilisation l'ajoutent à ~/.claude (cumul, pas par profil) et un serveur de statistiques en cours d'exécution le prend en compte à sa prochaine synchronisation ; l'utilisation déjà comptabilisée est conservée si vous l'effacez. Utilisez un chemin absolu ou ~/… ; avec un node WSL, un chemin Linux comme /home/me/.claude-work fonctionne et le CLAUDE_CONFIG_DIR de Windows n'est pas utilisé. Associez-le au chemin du CLI Claude du même profil. Le démon redémarre lors de l'enregistrement."
       },
       "workingDirectory": {
         "label": "Working Directory",
@@ -242,6 +369,17 @@
         "enabled": "Activé",
         "disabled": "Désactivé",
         "hint": "Lorsqu'activé, sélectionner un fichier dans l'arborescence du projet enverra automatiquement son chemin à l'AI (note : seul le chemin du fichier est envoyé, pas son contenu). Lorsque désactivé, une action manuelle est requise."
+      },
+      "loadHistoryOnStartup": {
+        "label": "Charger l’historique au démarrage",
+        "enabled": "Activé",
+        "disabled": "Désactivé",
+        "hint": "Charge automatiquement l’historique des sessions restaurées. Après un échec ou une expiration, réessayez manuellement."
+      },
+      "historyLoadTimeout": {
+        "label": "Délai de chargement de l’historique",
+        "unit": "secondes",
+        "hint": "La restauration automatique et le chargement manuel partagent ce délai (5 à 120 secondes). Vous pouvez réessayer dans la conversation."
       },
       "promptEnhancer": {
         "label": "Prompt Enhancer",
@@ -362,6 +500,12 @@
         "enabled": "Activé",
         "disabled": "Désactivé",
         "hint": "Lorsqu'elle est désactivée, créer une nouvelle session dans une conversation contenant des messages se fera directement, sans afficher la boîte de dialogue de confirmation."
+      },
+      "sessionGitRepositoryMatching": {
+        "label": "Associer les sessions par dépôt Git distant",
+        "enabled": "Activé",
+        "disabled": "Désactivé",
+        "hint": "Inclut l'historique Codex et Claude Code d'autres répertoires ayant le même hôte distant, propriétaire et dépôt normalisés. Sans informations Git, l'association se fait par répertoire de travail."
       }
     },
     "providers": "Gestion des fournisseurs",
@@ -554,6 +698,38 @@
     "wechatPay": "WeChat Pay",
     "paypal": "PayPal",
     "provider": {
+      "backup": {
+        "exportInvalidConfig": "Échec de l’exportation : une configuration de fournisseur enregistrée n’a pas passé la validation. Aucun fichier de sauvegarde n’a été créé.",
+        "errorProvider": "Vérifiez le fournisseur enregistré n° {{index}} (hors paramètres locaux et connexions CLI).",
+        "errorField": "Champ : {{field}}.",
+        "import": "Importer",
+        "export": "Exporter",
+        "importFile": "Importer une sauvegarde CC GUI",
+        "importTitle": "Importer les fournisseurs {{engine}}",
+        "exportTitle": "Exporter les fournisseurs {{engine}}",
+        "scope": "Seuls les fournisseurs enregistrés dans cet onglet, clés comprises, sont transférés. Les sessions CLI locales et leur état actif sont exclus.",
+        "mergeHint": "Importez uniquement des fichiers fiables. Les configurations identiques sont ignorées ; les autres sont ajoutées sans écrasement ni activation. Noms, notes, identifiants et dates ne comptent pas pour la déduplication.",
+        "selectFile": "Choisir un fichier",
+        "passwordOptional": "Mot de passe d’exportation (facultatif)",
+        "passwordRequired": "Saisir le mot de passe du fichier",
+        "confirmPassword": "Confirmer le mot de passe",
+        "plaintextWarning": "Je comprends : sans mot de passe, les clés API seront exportées en clair. Je conserverai le fichier en lieu sûr.",
+        "passwordHint": "Utilisez au moins 8 caractères ; un mot de passe long et unique est conseillé. Un mot de passe perdu ne peut pas être récupéré.",
+        "passwordShort": "Le mot de passe doit contenir au moins 8 caractères.",
+        "passwordMismatch": "Les mots de passe ne correspondent pas.",
+        "working": "Traitement en cours…",
+        "importSuccess": "Importation terminée : {{imported}} ajouts, {{skipped}} configurations en double ignorées.",
+        "exportSuccess": "Configuration exportée.",
+        "exportPartial": "Fournisseurs exportés : {{exported}}. Ignorés car non valides : {{skipped}} ({{positions}} ; numérotation hors paramètres locaux et connexions CLI).",
+        "invalidFile": "Fichier, version ou configuration non valide. Aucune importation effectuée.",
+        "wrongEngine": "Ce fichier correspond à un autre onglet. Choisissez l’onglet Claude Code ou Codex approprié.",
+        "tooLarge": "Fichier ou configuration trop volumineux (8 MiB et 2000 fournisseurs maximum).",
+        "empty": "Aucune configuration de fournisseur à traiter.",
+        "wrongPassword": "Mot de passe incorrect ou fichier chiffré endommagé. Aucune importation effectuée.",
+        "failed": "Échec de l’opération. Vérifiez les autorisations et la configuration du fichier, puis réessayez.",
+        "busy": "Une autre importation/exportation est en cours. Réessayez plus tard.",
+        "timeout": "Délai d’attente dépassé. L’opération peut être encore en cours ; vérifiez la liste ou le fichier exporté avant de réessayer."
+      },
       "currentConfig": "Configuration ClaudeCode actuelle",
       "loading": "Chargement...",
       "noConfig": "Aucune information de configuration",
@@ -855,6 +1031,11 @@
         "saveChanges": "Save"
       }
     },
+    "gemini": {
+      "idleReapLabel": "Arrêter automatiquement les tours silencieux",
+      "idleReapHelp": "Met fin à un tour Gemini sans aucune sortie pendant ce nombre de minutes — généralement une CLI bloquée sur une invite interactive ou un backend en panne. 0 désactive l'arrêt automatique.",
+      "idleReapDisabled": "Désactivé"
+    },
     "cli": {
       "hint": "These CLIs must be installed and configured in your system terminal. The plugin only detects installation status and version — it will never install them for you. Confirm each CLI works in the terminal before coming back here to use it.",
       "refresh": "Re-check",
@@ -902,6 +1083,10 @@
         "omp": {
           "name": "OMP CLI",
           "description": "Agent de codage terminal Oh My Pi avec prise en charge multi-fournisseurs"
+        },
+        "gemini": {
+          "name": "Antigravity CLI",
+          "description": "Agent de codage en terminal Google Antigravity (agy)"
         }
       },
       "installDialog": {
@@ -939,6 +1124,132 @@
       "source": "Source: {{source}}",
       "readOnlyTitle": "Read only",
       "readOnlyDesc": "Inspect files without writing to the workspace."
+    },
+    "hooks": {
+      "title": "Hooks",
+      "description": "Consultez et modifiez les hooks Codex et Claude Code en toute sécurité.",
+      "refresh": "Actualiser",
+      "provider": "Fournisseur",
+      "scope": "Portée",
+      "all": "Tous",
+      "allProviders": "Tous les fournisseurs",
+      "allScopes": "Toutes les portées",
+      "global": "Utilisateur",
+      "project": "Projet",
+      "projectLocal": "Projet (surcharge locale)",
+      "search": "Rechercher des hooks",
+      "searchPlaceholder": "Rechercher événements, commandes ou chemins",
+      "noMatches": "Aucun hook ne correspond aux filtres.",
+      "toggleUnavailable": "Le basculement individuel attend la vérification du comportement du fournisseur.",
+      "enabled": "Activé",
+      "disabled": "Désactivé",
+      "enable": "Activer le hook",
+      "disable": "Désactiver le hook",
+      "managedToggleHint": "Basculement géré par CC GUI ; la configuration d’origine est conservée et restaurable.",
+      "nativeToggleHint": "Modifie votre préférence Codex ; la confiance, les fonctionnalités et les règles contrôlent aussi l’exécution.",
+      "toggleFailed": "Échec du basculement",
+      "loading": "Recherche des hooks…",
+      "empty": "Aucun hook trouvé.",
+      "valid": "Format reconnu",
+      "validationWarning": "À vérifier",
+      "matcher": "Filtre",
+      "noCommand": "Aucune commande",
+      "readOnly": "Lecture seule",
+      "viewSource": "Voir la source",
+      "editSource": "Modifier la source",
+      "sourcePreview": "Aperçu de la source",
+      "sourceTab": "Source",
+      "detailsTab": "Détails",
+      "viewMode": "Vue des hooks",
+      "loadingSource": "Chargement de la source…",
+      "sourceEditor": "Éditeur de source",
+      "affectedFile": "Fichier concerné",
+      "backupDirectory": "Dossier de sauvegarde",
+      "latestBackup": "Restaurer la dernière sauvegarde de cette session d’édition",
+      "lastModified": "Dernière modification",
+      "event": "Événement",
+      "format": "Format",
+      "revision": "Révision",
+      "command": "Commande",
+      "validationIssues": "Problèmes de validation",
+      "providerFields": "Champs du fournisseur",
+      "noProviderFields": "Aucun champ spécifique",
+      "none": "Aucun",
+      "reviewChanges": "Vérifier les modifications",
+      "hideChanges": "Masquer les différences",
+      "noChanges": "Aucune modification à enregistrer",
+      "technicalInfo": "Informations techniques",
+      "moreActions": "Autres actions",
+      "conflictTitle": "La source a été modifiée ailleurs",
+      "conflictDescription": "Rechargez la version externe ou gardez le brouillon en synchronisant la dernière révision.",
+      "reloadExternal": "Recharger la version externe",
+      "keepDraft": "Garder le brouillon et synchroniser",
+      "discardDraft": "Abandonner le brouillon",
+      "discardChangesTitle": "Abandonner les modifications ?",
+      "discardChangesMessage": "Les modifications non enregistrées seront perdues à la fermeture.",
+      "backupOnSave": "Une sauvegarde précède l’enregistrement",
+      "save": "Enregistrer",
+      "saving": "Enregistrement…",
+      "restore": "Restaurer la dernière sauvegarde de cette session d’édition",
+      "saveFailed": "Échec de l’enregistrement",
+      "sourceLoadFailed": "Échec du rechargement",
+      "noPreview": "Aucun aperçu.",
+      "sourceNotice": "{{count}} sources sont à vérifier ; leurs opérations sont limitées.",
+      "sharedProjectWarning": "La configuration du projet peut être commitée et affecter d’autres utilisateurs. Vérifiez les différences avant partage.",
+      "bridgeUnavailable": "Connexion à l’IDE indisponible. Rouvrez les paramètres.",
+      "sourceTimeout": "Lecture expirée. Rechargez la source avant de modifier.",
+      "mutationTimeout": "Confirmation expirée. Actualisez avant de réessayer ; la modification peut être enregistrée.",
+      "mutationConfirmedLate": "L’enregistrement retardé est confirmé. Brouillon conservé ; rechargez la source.",
+      "issues": {
+        "COMMAND_MISSING": "Commande manquante",
+        "TYPE_MISSING": "Type manquant",
+        "HOOKS_NOT_OBJECT": "hooks doit être un objet",
+        "SETTINGS_NOT_OBJECT": "Les paramètres doivent être un objet",
+        "INVALID_JSON": "JSON non valide",
+        "HOOK_ENTRY_NOT_OBJECT": "L’entrée doit être un objet",
+        "INVALID_TOML": "TOML non valide",
+        "CODEX_HOOKS_NOT_TABLE": "hooks Codex doit être une table",
+        "CODEX_HOOK_EVENT_NOT_ARRAY": "Les événements doivent être des tableaux",
+        "CODEX_HOOK_ENTRY_NOT_TABLE": "L’entrée doit être une table",
+        "CODEX_ENABLED_INVALID": "Champ d’activation non valide",
+        "CODEX_MATCHER_INVALID": "Filtre non valide",
+        "CODEX_COMMANDS_INVALID": "Commande ou outil MCP valide manquant",
+        "CODEX_HOOKS_FEATURE_DISABLED": "Fonction hooks désactivée",
+        "READ_FAILED": "Échec de la lecture",
+        "CODEX_EVENT_UNSUPPORTED": "Événement non pris en charge par le schéma vérifié",
+        "CODEX_HANDLER_UNSUPPORTED": "Type de gestionnaire non pris en charge",
+        "CODEX_HOOK_FILE_FIELDS_INVALID": "Champs du fichier non valides",
+        "CODEX_STATE_INLINE_UNSUPPORTED": "État en ligne non modifiable en sécurité ; utilisez une table.",
+        "LINKED_SOURCE_READ_ONLY": "Les fichiers liés sont en lecture seule. Modifiez directement le fichier original.",
+        "HOOK_SOURCE_UNAVAILABLE": "Le fichier source est indisponible."
+      },
+      "sharedToggleTitle": "Confirmer la modification du projet partagé",
+      "sharedToggleMessage": "Cette action modifie le fichier partagé .claude/settings.json et peut affecter les autres contributeurs. Les données de restauration restent sur cet ordinateur.",
+      "confirmSharedToggle": "Modifier la configuration partagée",
+      "sensitiveSourceWarning": "Ce fichier peut contenir des identifiants et des paramètres sensibles. Affichez-le lorsque vous êtes prêt à le modifier.",
+      "revealSource": "Afficher la configuration",
+      "errors": {
+        "HOOK_SHARED_CONFIRMATION_REQUIRED": "Confirmez d’abord la modification de la configuration partagée.",
+        "HOOK_CATALOG_TIMEOUT": "Actualisation des hooks expirée. Actualisez avant de modifier un autre hook.",
+        "HOOK_REVISION_CONFLICT": "Le fichier a été modifié en dehors de cette page. Actualisez puis réessayez.",
+        "HOOK_RESTORE_CONFLICT": "Impossible de restaurer le hook : cet événement n’est plus une liste dans le fichier. Corrigez le fichier puis réessayez.",
+        "HOOK_TOGGLE_LOCKED": "Une autre modification de ce fichier est en cours. Réessayez dans un instant.",
+        "HOOK_TOGGLE_LOCK_FAILED": "Impossible de verrouiller le fichier pour cette modification.",
+        "HOOK_FILE_LOCKED": "Une autre modification de ce fichier est en cours. Réessayez dans un instant.",
+        "HOOK_NOT_FOUND": "Ce hook n’est plus dans le fichier. Actualisez la liste.",
+        "HOOK_NOT_DISABLED": "Ce hook n’est pas désactivé. Actualisez la liste.",
+        "HOOK_ALREADY_DISABLED": "Ce hook est déjà désactivé. Actualisez la liste.",
+        "HOOK_STATE_WRITE_FAILED": "Impossible d’enregistrer l’état du hook désactivé. La modification du fichier a été annulée dans la mesure du possible.",
+        "HOOK_TOGGLE_FAILED": "Impossible de modifier ce hook.",
+        "INVALID_HOOK_PATH": "Ce fichier ne peut pas être modifié ici. Les fichiers liés et ceux situés hors des emplacements connus sont en lecture seule.",
+        "INVALID_BACKUP_PATH": "Le fichier de sauvegarde n’est pas disponible.",
+        "SOURCE_TOO_LARGE": "Le fichier dépasse 128 Ko et ne peut pas être modifié ici.",
+        "INVALID_REQUEST": "Requête invalide. Actualisez la page puis réessayez.",
+        "WRITE_FAILED": "Impossible d’enregistrer le fichier.",
+        "RESTORE_FAILED": "Impossible de restaurer la sauvegarde.",
+        "UNSUPPORTED_HOOK_PROVIDER": "Ce type de hook ne peut pas être modifié ici.",
+        "UNKNOWN_ERROR": "Erreur inconnue."
+      }
     }
   },
   "history": {
@@ -981,6 +1292,16 @@
     "cancelEditButton": "Annuler",
     "titleTooLong": "Titre trop long (maximum 50 caractères)",
     "titleUpdated": "Titre mis à jour",
+    "regenerateTitle": "Régénérer le titre à partir de la conversation",
+    "titleRegenerated": "Titre régénéré",
+    "titleRegenerateFailed": {
+      "generic": "Échec de la régénération du titre",
+      "emptySession": "Aucun contenu de conversation pour générer un titre",
+      "disabled": "La génération de titres par IA est désactivée dans les paramètres",
+      "sessionNotFound": "Fichier de session introuvable",
+      "generationFailed": "Échec de la génération du titre, réessayez plus tard",
+      "customTitle": "Cette session possède un titre manuel, qui prime sur le titre généré par l’IA"
+    },
     "copySessionId": "Copier l'ID de session pour CLI resume",
     "sessionIdCopied": "ID de session copié",
     "copyFailed": "Échec de la copie",
@@ -1018,7 +1339,12 @@
       "claude-vscode": "Cette session a été créée par l'extension VS Code et n'est pas affichée dans CLI par défaut. Cliquez sur 'Convertir en CLI' pour qu'elle apparaisse dans la liste /resume du CLI du terminal",
       "remote": "Cette session a été créée par une instance distante de Claude Code"
     },
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "sessionInUse": "Les sessions en cours d'utilisation ne peuvent pas être supprimées.",
+    "deleteFailed": "Impossible de supprimer la session. Veuillez réessayer.",
+    "confirmDirectoryTitle": "Ouvrir la session dans un autre répertoire ?",
+    "confirmDirectoryMessage": "Les commandes et les modifications de fichiers seront exécutées dans le répertoire ci-dessous.",
+    "executionDirectory": "Exécuter dans"
   },
   "permission": {
     "dialogTitle": "Demande de permission",
@@ -1050,7 +1376,15 @@
     "codexDeliveryFailed": "Codex n'a pas reçu votre choix ({{error}}). Si la conversation ne reprend pas, cliquez sur Arrêter puis renvoyez votre message.",
     "codexDeliveryUnconfirmed": "Codex n'a pas encore confirmé votre choix ({{error}}). Il peut encore être appliqué, ne répondez donc pas une seconde fois ; si la conversation ne reprend pas, cliquez sur Arrêter puis renvoyez votre message."
   },
+  "modelConfig": {
+    "approvals": "Approbations",
+    "ultracode": {
+      "label": "Ultracode",
+      "description": "Workflow natif Claude avec délégation automatique des tâches. Conserve le niveau de raisonnement choisi."
+    }
+  },
   "askUserQuestion": {
+    "ompTitle": "OMP a quelques questions à vous poser",
     "title": "Claude a quelques questions pour vous",
     "progress": "Question {{current}} / {{total}}",
     "multiSelectHint": "Vous pouvez sélectionner plusieurs options",
@@ -1064,7 +1398,11 @@
     "timeoutWarning": "Veuillez répondre rapidement, la boîte de dialogue se fermera dans {{seconds}} secondes",
     "expand": "Développer",
     "collapse": "Réduire",
-    "clickToAnswer": "Cliquez pour répondre"
+    "clickToAnswer": "Cliquez pour répondre",
+    "recordTitle": "Questions de Codex",
+    "recordAnswer": "Votre réponse",
+    "recordSkipped": "Ignorée (fermée sans réponse)",
+    "answerNotSent": "Votre réponse à la question de Codex n'a pas été envoyée, car une autre conversation est ouverte. Revenez à cette conversation et renvoyez votre réponse."
   },
   "planApproval": {
     "title": "Plan Ready for Approval",
@@ -1097,7 +1435,11 @@
     "invalidJsonConfig": "Format de configuration JSON invalide",
     "providerAdded": "Fournisseur ajouté",
     "providerUpdated": "Fournisseur mis à jour",
-    "providerDeleted": "Fournisseur supprimé"
+    "providerDeleted": "Fournisseur supprimé",
+    "codexSettingsDispatchFailed": "Impossible d'envoyer les paramètres Codex à l'IDE. Rouvrez la discussion et réessayez.",
+    "codexSettingsRuntimeInactive": "L’environnement d’exécution de Codex est inactif. Rouvrez la conversation et réessayez.",
+    "codexSettingsServiceUnavailable": "Le service Codex est indisponible. Rouvrez la conversation et réessayez.",
+    "codexSettingsUpdateFailed": "Impossible de confirmer les paramètres de Codex. Rouvrez la conversation et réessayez."
   },
   "config": {
     "clickToCopy": "Cliquer pour copier",
@@ -1437,6 +1779,12 @@
     "bashGroupCompleted": "completed",
     "bashGroupAllCompleted": "All Completed",
     "bashGroupFailed": "failed",
+    "bashGroupCopyCommand": "Copier la commande",
+    "bashGroupCopyOutput": "Copier la sortie",
+    "bashGroupOutput": "Sortie",
+    "bashGroupOutputFailed": "Échec",
+    "bashGroupRunning": "En cours…",
+    "bashGroupNoOutput": "(aucune sortie)",
     "reportFindings": {
       "title": "Constats de la revue",
       "findingsCount_one": "{{count}} constat",
@@ -1482,6 +1830,7 @@
       "loading": "Chargement du processus de l'agent…",
       "unavailable": "Le journal du processus n'est pas disponible tant que la session n'a pas d'identifiant.",
       "reportGenerated": "Rapport d'analyse structuré généré",
+      "historyTruncated": "Historique abrégé : {{count}} entrées omises. La tâche initiale et l’activité récente sont conservées.",
       "unitMs": "ms",
       "unitS": "s",
       "unitTools": "outils",
@@ -1660,6 +2009,9 @@
     }
   },
   "models": {
+    "gemini": {
+      "vanishedSelection": "Le modèle {{model}} n'est plus disponible — retour au modèle par défaut de la CLI."
+    },
     "addModel": "Ajouter un modèle",
     "searchPlaceholder": "Rechercher des modèles",
     "clearSearch": "Effacer la recherche",
@@ -1700,13 +2052,13 @@
         "label": "Haiku 4.5",
         "description": "Haiku 4.5 · Le plus rapide pour des réponses rapides"
       },
+      "fable52": {
+        "label": "Fable 5.2",
+        "description": "Fable 5.2 · Le plus puissant · classe Mythos"
+      },
       "fable51": {
         "label": "Fable 5.1",
-        "description": "Fable 5.1 · Le plus puissant · classe Mythos"
-      },
-      "fable5": {
-        "label": "Fable 5",
-        "description": "Fable 5 · Génération Fable précédente"
+        "description": "Fable 5.1 · Génération Fable précédente"
       }
     },
     "longContext": {
@@ -1781,6 +2133,12 @@
       "shortLabel": "Totale",
       "tooltip": "Contourner toutes les vérifications d'autorisation",
       "description": "Entièrement automatisé, contourne toutes les vérifications d'autorisation [À utiliser avec prudence]"
+    },
+    "sandbox": {
+      "label": "Mode Sandbox",
+      "shortLabel": "Sandbox",
+      "tooltip": "Exécution en sandbox (Gemini CLI uniquement)",
+      "description": "S'exécute dans un sandbox avec des restrictions de terminal activées (Gemini CLI)"
     }
   },
   "workspaceDiff": {
@@ -1826,6 +2184,25 @@
       "description": "Hands-off mode. Codex executes edits and shell commands immediately."
     }
   },
+  "ompApprovals": {
+    "title": "Choisir le mode d'approbation d'OMP",
+    "default": {
+      "label": "Par défaut",
+      "description": "Automatique total si tools.approvalMode est absent"
+    },
+    "alwaysAsk": {
+      "label": "Demander",
+      "description": "Demande avant les modifications et les commandes"
+    },
+    "write": {
+      "label": "Approuver les modifications",
+      "description": "Ne demande qu'avant les commandes"
+    },
+    "yolo": {
+      "label": "Automatique total",
+      "description": "Ne demande jamais"
+    }
+  },
   "ompModes": {
     "default": {
       "label": "Par défaut",
@@ -1862,7 +2239,7 @@
       "label": "ZCode"
     },
     "gemini": {
-      "label": "Gemini Cli"
+      "label": "Antigravity CLI"
     },
     "opencode": {
       "label": "OpenCode"
@@ -1944,6 +2321,10 @@
     "xhigh": {
       "label": "Maximum",
       "description": "Profondeur de raisonnement maximale"
+    },
+    "ultra": {
+      "label": "Ultra",
+      "description": "Raisonnement maximal avec délégation automatique des tâches"
     }
   },
   "errorBoundary": {
@@ -1981,6 +2362,16 @@
     "codexNetworkErrorChecks": "Veuillez vérifier :\n1. La connexion réseau fonctionne-t-elle ?\n2. Si vous utilisez un proxy, veuillez confirmer la configuration du proxy\n3. Le pare-feu bloque-t-il la connexion ?",
     "codexError": "Erreur Codex :",
     "codexErrorCheck": "Veuillez vérifier la connexion réseau et la configuration Codex",
+    "geminiAuthRequired": "Authentification Gemini CLI requise :",
+    "geminiAuthCause": "- Cause : La CLI Gemini (agy) n'est pas connectée ou les identifiants ont expiré.",
+    "geminiAuthResolution": "- Résolution : Exécutez 'agy' dans un terminal externe et suivez le flux de connexion Google interactif.",
+    "geminiAuthNote": "- Remarque : Ce plugin ne gère pas les identifiants Google et n'effectue pas de connexion Google depuis le plugin.",
+    "geminiErrorDetails": "Détails de l'erreur",
+    "geminiIdleReapStopped": "Le tour Gemini a été arrêté automatiquement : aucune sortie de la CLI Gemini (agy) depuis {{window}}.",
+    "geminiIdleReapCauseAlive": "- Cause probable : le processus de la CLI était vivant mais silencieux — il est probablement bloqué sur une invite interactive (le plus souvent l'authentification) ou en attente côté backend/réseau.",
+    "geminiIdleReapCauseExited": "- Cause probable : le processus de la CLI s'était déjà terminé sans livrer de résultat.",
+    "geminiIdleReapWhatToDo": "- Que faire : exécutez 'agy' dans un terminal externe pour vérifier votre connexion, puis annulez et réessayez ; si le tour était légitimement silencieux (par ex. une longue compilation), augmentez la limite.",
+    "geminiIdleReapSetting": "- Cette limite est configurable : définissez gemini.idleReapMinutes dans les paramètres du plugin Gemini (0 désactive l'arrêt automatique).",
     "codexThinkingHint": "Codex n'a pas retourné d'éléments de raisonnement. Si vous ne pouvez toujours pas voir le processus de réflexion, veuillez consulter docs/codex/docs/config.md pour les paramètres hide_agent_reasoning/show_raw_agent_reasoning, et assurez-vous que votre compte OpenAI a été vérifié.",
     "userDeniedPermission": "L'utilisateur a refusé la permission pour l'outil {{toolName}}",
     "userDidNotProvideAnswers": "L'utilisateur n'a pas fourni de réponses",
@@ -1993,7 +2384,19 @@
     "uploadedImages": "{{count}} image(s) téléchargée(s)",
     "uploadedAttachments": "Pièce(s) jointe(s) téléchargée(s)",
     "emptyMessage": "Message vide",
-    "attachment": "Pièce jointe"
+    "attachment": "Pièce jointe",
+    "workspaceSubstituted": "[Avis] Répertoire de travail remplacé : \"{{requested}}\" demandé, utilisation de \"{{effective}}\" ({{reason}}).",
+    "workspaceReasonUnsafe": "répertoire de travail non sûr",
+    "workspaceReasonPluginInternal": "répertoire interne du plugin",
+    "workspaceReasonMissing": "le répertoire n'existe pas",
+    "workspaceReasonNotADirectory": "n'est pas un répertoire",
+    "workspaceReasonTemporary": "répertoire temporaire",
+    "attachmentNotDelivered": {
+      "notice": "[Avis] Pièce jointe non livrée : \"{{name}}\" ({{reason}}).",
+      "nonImage": "seules les pièces jointes de type image sont prises en charge",
+      "tooLarge": "l'image dépasse la limite de 2 Mo par image",
+      "invalid": "les données de l'image sont absentes ou illisibles"
+    }
   },
   "changelog": {
     "title": "Nouveautés",
@@ -2019,14 +2422,85 @@
     "updateClaudeSdkCustomCli": "SDK mis à jour vers {{version}}, mais le plugin exécute votre CLI Claude personnalisé ({{path}}). Mettez-le à jour avec l'option 2.",
     "updateClaudeSdkAlreadyLatest": "{{version}} est déjà le SDK le plus récent pris en charge par ce plugin, et ce modèle nécessite un Claude Code plus récent. Mettez à jour le plugin dès qu'une nouvelle version sort, ou choisissez un autre modèle.",
     "codexWriterConflict": {
-      "title": "Fil Codex occupé",
-      "intro": "Un autre tour ou client Codex écrit dans cette conversation. Cet envoi n’a pas pu démarrer.",
-      "reason": "Arrêtez le tour dans le client utilisant cette conversation, puis renvoyez le message une fois le tour terminé."
+      "title": "La conversation Codex est utilisée",
+      "intro": "Un autre client Codex ou une autre fenêtre détient le droit d’écriture sur cette conversation.",
+      "reason": "Cela ne signifie pas que la conversation a expiré. Le plugin ne supprime pas les verrous et n’arrête pas les autres clients automatiquement.",
+      "solutions": {
+        "releaseWriter": {
+          "title": "Libérer la conversation dans le client qui l’utilise",
+          "step0": "Arrêtez la tâche puis fermez ou libérez cette conversation dans le client Codex ou la fenêtre qui l’utilise.",
+          "step1": "Une fois la conversation libérée, revenez ici et renvoyez le message. Ne supprimez pas les fichiers de verrou pour forcer l’accès."
+        }
+      }
+    },
+    "codexThreadClosing": {
+      "title": "La conversation Codex se ferme encore",
+      "intro": "Codex n’a pas fini de fermer cette conversation et ne peut pas encore la restaurer.",
+      "reason": "Le plugin réessaie brièvement cet état de fermeture explicite avant de démarrer la tâche. Si le problème persiste, l’erreur d’origine reste visible.",
+      "solutions": {
+        "waitForClose": {
+          "title": "Attendre la fermeture précédente",
+          "step0": "Attendez que le client Codex ou la fenêtre précédente libère la conversation, puis réessayez.",
+          "step1": "Si cela se répète, rouvrez la conversation depuis l’historique après sa libération par le client précédent."
+        }
+      }
+    },
+    "codexThreadHistoryMissing": {
+      "title": "Historique Codex introuvable",
+      "intro": "L’environnement Codex actuel ne trouve pas l’historique natif de cette conversation.",
+      "reason": "Un autre dossier d’historique ou une première initialisation incomplète peut provoquer cette erreur. Elle ne prouve pas que l’historique a été supprimé.",
+      "solutions": {
+        "checkStorage": {
+          "title": "Vérifier l’emplacement d’origine de l’historique",
+          "step0": "Vérifiez que Codex utilise le CODEX_HOME d’origine et le même environnement hôte, notamment local ou WSL.",
+          "step1": "Après restauration du dossier d’historique ou de sa sauvegarde, rouvrez la conversation depuis l’historique."
+        },
+        "startNewIfMissing": {
+          "title": "Recommencer seulement si l’historique est irrécupérable",
+          "step0": "Créez une nouvelle conversation et redonnez le contexte nécessaire seulement si l’historique d’origine ne peut pas être récupéré. Les messages affichés ici ne restaurent pas automatiquement le contexte natif de Codex."
+        }
+      }
+    },
+    "codexThreadArchived": {
+      "title": "La conversation Codex est archivée",
+      "intro": "Codex indique que cette conversation est archivée et ne peut pas être reprise directement.",
+      "reason": "L’archivage n’est pas une expiration. Il n’est pas nécessaire de créer une nouvelle conversation pour la récupérer.",
+      "solutions": {
+        "unarchive": {
+          "title": "Désarchiver la conversation d’origine",
+          "step0": "Désarchivez-la dans le client Codex d’origine ou suivez la commande indiquée dans l’erreur d’origine.",
+          "step1": "Actualisez l’historique du plugin, rouvrez cette conversation et renvoyez le message."
+        }
+      }
+    },
+    "codexThreadResumeConfiguration": {
+      "title": "La configuration Codex bloque la restauration",
+      "intro": "Codex n’a pas pu charger sa configuration ou initialiser un serveur MCP requis.",
+      "reason": "Une nouvelle conversation ne réparera pas la même configuration. Le plugin ne désactive pas automatiquement les services requis.",
+      "solutions": {
+        "repairConfiguration": {
+          "title": "Corriger la configuration signalée par Codex",
+          "step0": "Consultez l’erreur d’origine pour identifier le paramètre ou le serveur MCP requis en échec.",
+          "step1": "Corrigez la configuration, les identifiants ou la connexion dans les paramètres Codex, fournisseur ou MCP, puis rouvrez la conversation et réessayez."
+        }
+      }
     },
     "codexThreadResume": {
-      "title": "Le thread de session n'est plus valide",
-      "intro": "La création d'une nouvelle session résoudra ce problème. L'identifiant de thread de la session actuelle n'existe plus sur le serveur Codex.",
-      "reason": "Codex supprime les anciens threads après un certain temps, ce qui peut déclencher cette erreur lors de la reprise d'une session précédente."
+      "title": "Impossible de restaurer la conversation Codex",
+      "intro": "Codex n’a pas pu restaurer cette conversation. La cause n’a pas encore été identifiée.",
+      "reason": "Un échec de restauration ne prouve pas une expiration. Le plugin conserve la conversation d’origine sans la remplacer silencieusement par une conversation vide.",
+      "solutions": {
+        "inspectCause": {
+          "title": "Consulter l’erreur d’origine avant de réessayer",
+          "step0": "Examinez l’erreur d’origine et vérifiez le fournisseur, l’environnement Codex et le dossier d’historique de cette conversation.",
+          "step1": "Si une réponse ou une exécution d’outil est déjà apparue, vérifiez son résultat avant de renvoyer le message afin d’éviter de répéter la tâche."
+        },
+        "checkCli": {
+          "title": "Vérifier la compatibilité de Codex CLI",
+          "step0": "Comparez la version du terminal à celle de la page CLI du plugin. Pour un chemin personnalisé, lancez cet exécutable avec --version.",
+          "step1": "Si l’erreur indique une version CLI ou de protocole non prise en charge, mettez Codex à jour selon les instructions officielles, puis actualisez sa détection."
+        }
+      }
     },
     "sdkNativeBinaryMissing": {
       "title": "Installation du SDK incomplète — binaire natif manquant",
@@ -2060,6 +2534,25 @@
         }
       }
     },
+    "claudeCodeWindowsTooOld": {
+      "title": "Claude Code ne peut pas démarrer sur cette version de Windows",
+      "intro": "Windows a empêché Claude Code de démarrer, car une fonction système nécessaire est introuvable (erreur 0xC0000139). Cela signifie généralement que Windows est trop ancien : Claude Code 2.1.118 et les versions ultérieures utilisent ClosePseudoConsole, qui nécessite Windows 10 version 1809 ou Windows Server 2019.",
+      "reason": "Windows rejette le programme dès son chargement, avant l’exécution de Claude Code : changer de modèle, de fournisseur ou de permissions n’y changera donc rien.",
+      "solutions": {
+        "updateWindows": {
+          "title": "Option 1 : Mettre à jour Windows",
+          "step0": "Passez à Windows 10 version 1809 ou ultérieure, ou à Windows Server 2019 ou ultérieur. Ces versions incluent la fonction manquante."
+        },
+        "useOlderSdk": {
+          "title": "Option 2 : Passer à un SDK plus ancien",
+          "step0": "Dans Gestion des dépendances, passez la version du SDK à v0.2.112 ou antérieure. Les modèles récents peuvent refuser cette version. Si un modèle demande un Claude Code plus récent, choisissez un autre modèle ou mettez à jour Windows : mettre à jour le SDK ferait réapparaître cette erreur."
+        },
+        "checkCustomCli": {
+          "title": "Option 3 : Vérifier votre CLI Claude personnalisé",
+          "step0": "Si vous avez renseigné « Chemin du CLI Claude (remplacement) », le plugin exécute ce binaire au lieu du SDK : changer de SDK n’a donc aucun effet. Effacez le chemin ou faites-le pointer vers un Claude Code plus ancien. Vérifiez ce point en premier si votre Windows est déjà à jour."
+        }
+      }
+    },
     "spawnEbusy": {
       "title": "spawn EBUSY — échec du lancement du processus enfant",
       "intro": "Cette erreur est généralement causée par une version de Node.js incompatible ou une installation incomplète du SDK. Essayez les deux options ci-dessous dans l'ordre :",
@@ -2073,6 +2566,38 @@
           "title": "Option 2 : Réinstaller le dernier SDK depuis le registre npm officiel",
           "step0": "1. Basculez vers le registre npm officiel (évitez le miroir Taobao — il peut ne pas avoir la dernière version) :",
           "step1": "2. Ouvrez Gestion des dépendances et réinstallez le dernier SDK :"
+        }
+      }
+    },
+    "codexCliVersionTooOld": {
+      "title": "Codex CLI est trop ancien pour ce mode d'autorisation",
+      "intro": "Les modes Automatisation totale et Approbation automatique utilisent le paramètre du réviseur automatique. Ce Codex CLI ne le reconnaît pas et a rejeté la requête : votre message n'a donc pas été traité.",
+      "reason": "Le plugin exécute le Codex CLI trouvé sur votre machine : mettre à jour le plugin ne met donc pas à jour le CLI. Si l'erreur persiste après la mise à jour, un codex plus ancien se trouve peut-être en tête de votre PATH.",
+      "solutions": {
+        "updateCodexCli": {
+          "title": "Option 1 : installer ou mettre à jour le CLI en suivant les instructions officielles",
+          "step0": "1. Ouvrez les instructions officielles et choisissez l'installateur autonome, npm ou Homebrew selon votre environnement d'exécution. Mettez à jour par le canal d'installation d'origine ; n'exécutez pas npm uninstall sur une installation autonome :",
+          "step1": "2. Dans un nouveau terminal, vérifiez que la version a changé, puis redémarrez l'IDE pour que le plugin utilise le nouveau CLI :"
+        },
+        "useDefaultMode": {
+          "title": "Option 2 : changer de mode d'autorisation pour l'instant",
+          "step0": "Passez en Default Mode. Ce mode n'utilise pas le réviseur automatique : vous pouvez continuer à travailler en attendant de mettre à jour le CLI. Si l'erreur persiste, mettez à jour le CLI comme indiqué dans l'option 1."
+        }
+      }
+    },
+    "codexCliAppServerTooOld": {
+      "title": "Codex CLI est trop ancien pour démarrer",
+      "intro": "Le CLI Codex local affiche bien sa version, mais il est trop ancien pour accepter l'option --listen que le plugin passe à codex app-server, et il s'arrête donc immédiatement.",
+      "reason": "Le plugin exécute le Codex CLI trouvé sur votre machine : mettre à jour le plugin ne met donc pas à jour le CLI. Si l'erreur persiste après la mise à jour, un codex plus ancien se trouve peut-être en tête de votre PATH.",
+      "solutions": {
+        "updateCodexCli": {
+          "title": "Option 1 : installer ou mettre à jour le CLI en suivant les instructions officielles",
+          "step0": "1. Ouvrez les instructions officielles et choisissez l'installateur autonome, npm ou Homebrew selon votre environnement d'exécution. Mettez à jour par le canal d'installation d'origine ; n'exécutez pas npm uninstall sur une installation autonome :",
+          "step1": "2. Dans un nouveau terminal, vérifiez que la version a changé, puis redémarrez l'IDE pour que le plugin utilise le nouveau CLI :"
+        },
+        "pointCodexBin": {
+          "title": "Option 2 : pointer le plugin vers un binaire fonctionnel",
+          "step0": "Listez tous les codex de votre PATH (sous Windows : where codex). Si celui qui fonctionne n'est pas le premier, définissez la variable d'environnement CODEX_BIN avec son chemin complet, puis redémarrez l'IDE. Le plugin bascule aussi automatiquement vers les installations suivantes."
         }
       }
     },
@@ -2101,5 +2626,11 @@
       "executing": "Executing…",
       "adjust": "Continue adjusting"
     }
+  },
+  "sessionSupplier": {
+    "label": "Fournisseur",
+    "choose": "Sélectionnez un fournisseur",
+    "nextTurn": "S'applique au prochain tour",
+    "unavailable": "Fournisseur indisponible. Rouvrez ce menu pour réessayer ou sélectionnez un autre fournisseur."
   }
 }

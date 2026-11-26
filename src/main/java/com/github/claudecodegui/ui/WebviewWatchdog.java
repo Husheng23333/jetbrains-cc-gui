@@ -26,6 +26,9 @@ public class WebviewWatchdog {
     private static final Logger LOG = Logger.getInstance(WebviewWatchdog.class);
 
     private static final long HEARTBEAT_TIMEOUT_MS = 45_000L;
+    private static final long HEARTBEAT_RESUME_GAP_MS = 15_000L;
+    /** A resume replays the whole transcript; repeated gaps share one replay per interval. */
+    private static final long MIN_RESUME_INTERVAL_MS = 60_000L;
     private static final long WATCHDOG_INTERVAL_MS = 10_000L;
     private static final long RECOVERY_COOLDOWN_MS = 60_000L;
     private static final long STARTUP_READY_TIMEOUT_MS = 15_000L;
@@ -33,7 +36,11 @@ public class WebviewWatchdog {
     private static final int MAX_STARTUP_RECOVERY_ATTEMPTS = 2;
 
     private volatile long lastHeartbeatAtMs;
+    private volatile long lastReceivedHeartbeatAtMs;
+    private volatile boolean resumePending;
+    private volatile long lastResumeAtMs;
     private volatile long lastRafAtMs;
+    private volatile long rafTrustedSinceMs;
     private volatile String lastVisibility = null;
     private volatile Boolean lastHasFocus = null;
     private volatile int stallCount = 0;
@@ -41,6 +48,8 @@ public class WebviewWatchdog {
     private volatile ScheduledFuture<?> watchdogFuture = null;
     private final AtomicBoolean recoveryPending = new AtomicBoolean();
     private final AtomicInteger startupRecoveryAttempts = new AtomicInteger();
+    private final AtomicBoolean startupFailureReported = new AtomicBoolean();
+    private volatile Runnable startupFailureHandler = () -> { };
 
     private final JPanel mainPanel;
     private final BooleanSupplier browserAvailableCheck;
@@ -84,6 +93,7 @@ public class WebviewWatchdog {
     private final ReadyCheck readyCheck;
     private final LongSupplier currentTimeMillis;
     private final Consumer<Runnable> recoveryExecutor;
+    private final BooleanSupplier recoveryAllowed;
 
     public WebviewWatchdog(
             JPanel mainPanel,
@@ -94,6 +104,20 @@ public class WebviewWatchdog {
             StreamActiveCheck streamActiveCheck,
             ReadyCheck readyCheck
     ) {
+        this(mainPanel, browserProvider, onReloadWebview, onRecreateWebview,
+                disposedCheck, streamActiveCheck, readyCheck, () -> true);
+    }
+
+    public WebviewWatchdog(
+            JPanel mainPanel,
+            BrowserProvider browserProvider,
+            Runnable onReloadWebview,
+            Runnable onRecreateWebview,
+            DisposedCheck disposedCheck,
+            StreamActiveCheck streamActiveCheck,
+            ReadyCheck readyCheck,
+            BooleanSupplier recoveryAllowed
+    ) {
         this(
                 mainPanel,
                 () -> browserProvider.getBrowser() != null,
@@ -103,7 +127,8 @@ public class WebviewWatchdog {
                 streamActiveCheck,
                 readyCheck,
                 System::currentTimeMillis,
-                runnable -> ApplicationManager.getApplication().invokeLater(runnable)
+                runnable -> ApplicationManager.getApplication().invokeLater(runnable),
+                recoveryAllowed
         );
     }
 
@@ -118,6 +143,22 @@ public class WebviewWatchdog {
             LongSupplier currentTimeMillis,
             Consumer<Runnable> recoveryExecutor
     ) {
+        this(mainPanel, browserAvailableCheck, onReloadWebview, onRecreateWebview,
+                disposedCheck, streamActiveCheck, readyCheck, currentTimeMillis, recoveryExecutor, () -> true);
+    }
+
+    WebviewWatchdog(
+            JPanel mainPanel,
+            BooleanSupplier browserAvailableCheck,
+            Runnable onReloadWebview,
+            Runnable onRecreateWebview,
+            DisposedCheck disposedCheck,
+            StreamActiveCheck streamActiveCheck,
+            ReadyCheck readyCheck,
+            LongSupplier currentTimeMillis,
+            Consumer<Runnable> recoveryExecutor,
+            BooleanSupplier recoveryAllowed
+    ) {
         this.mainPanel = mainPanel;
         this.browserAvailableCheck = browserAvailableCheck;
         this.onReloadWebview = onReloadWebview;
@@ -127,9 +168,17 @@ public class WebviewWatchdog {
         this.readyCheck = readyCheck;
         this.currentTimeMillis = currentTimeMillis;
         this.recoveryExecutor = recoveryExecutor;
+        this.recoveryAllowed = recoveryAllowed;
         long now = currentTimeMillis.getAsLong();
         this.lastHeartbeatAtMs = now;
+        this.lastReceivedHeartbeatAtMs = now;
+        this.lastResumeAtMs = now - MIN_RESUME_INTERVAL_MS;
         this.lastRafAtMs = now;
+    }
+
+    /** Sets the non-destructive notice shown if the final startup recovery also times out. */
+    public void setStartupFailureHandler(Runnable handler) {
+        this.startupFailureHandler = java.util.Objects.requireNonNull(handler);
     }
 
     /**
@@ -161,29 +210,41 @@ public class WebviewWatchdog {
 
     /**
      * Handle a heartbeat message from the webview.
+     * @return whether the caller should reconcile a transport gap of at least three missing
+     *         heartbeat intervals now; see {@link #takePendingResume(long)}
      */
-    public void handleHeartbeat(String content) {
+    public boolean handleHeartbeat(String content) {
         long now = currentTimeMillis.getAsLong();
+        // Health resets on tab activation must not hide a transport gap from session recovery.
+        if (now - lastReceivedHeartbeatAtMs >= HEARTBEAT_RESUME_GAP_MS) {
+            resumePending = true;
+        }
+        lastReceivedHeartbeatAtMs = now;
         lastHeartbeatAtMs = now;
 
         if (content == null || content.isEmpty()) {
             lastRafAtMs = now;
             lastVisibility = null;
             lastHasFocus = null;
-            return;
+            return takePendingResume(now);
         }
 
         try {
             JsonObject json = new Gson().fromJson(content, JsonObject.class);
             if (json != null) {
-                if (json.has("raf")) {
-                    lastRafAtMs = json.get("raf").getAsLong();
-                } else {
-                    lastRafAtMs = now;
+                long reportedRafAtMs = now;
+                if (json.has("raf") && json.has("ts")) {
+                    // Both values come from the client; comparing its wall clock to the Host's
+                    // makes healthy remote pages look frozen when the clocks differ.
+                    long renderAgeMs = Math.max(0L,
+                            json.get("ts").getAsLong() - json.get("raf").getAsLong());
+                    reportedRafAtMs = now - renderAgeMs;
                 }
+                boolean wasHidden = lastVisibility != null && !"visible".equals(lastVisibility);
                 if (json.has("visibility")) {
                     lastVisibility = json.get("visibility").getAsString();
                 }
+                lastRafAtMs = effectiveRafAtMs(reportedRafAtMs, wasHidden, now);
                 if (json.has("focus")) {
                     lastHasFocus = json.get("focus").getAsBoolean();
                 }
@@ -192,6 +253,38 @@ public class WebviewWatchdog {
             // Non-JSON heartbeat payload (backward compatibility)
             lastRafAtMs = now;
         }
+        return takePendingResume(now);
+    }
+
+    /**
+     * A hidden page does not run requestAnimationFrame, so its render age says nothing about
+     * health. Staleness only counts from the moment the page became visible: the first visible
+     * heartbeat can be sent before the first frame, carrying a render time from before the hide.
+     */
+    private long effectiveRafAtMs(long reportedRafAtMs, boolean wasHidden, long now) {
+        boolean visible = lastVisibility == null || "visible".equals(lastVisibility);
+        if (!visible) {
+            return now;
+        }
+        if (wasHidden) {
+            rafTrustedSinceMs = now;
+        }
+        return Math.max(reportedRafAtMs, rafTrustedSinceMs);
+    }
+
+    /**
+     * Chromium wakes a page hidden for minutes about once a minute, so a hidden page's gaps are
+     * throttling rather than outages: the gap stays pending until a visible heartbeat. Gaps
+     * during the interval after a resume are reconciled together when it ends.
+     */
+    private boolean takePendingResume(long now) {
+        boolean visible = lastVisibility == null || "visible".equals(lastVisibility);
+        if (!resumePending || !visible || now - lastResumeAtMs < MIN_RESUME_INTERVAL_MS) {
+            return false;
+        }
+        resumePending = false;
+        lastResumeAtMs = now;
+        return true;
     }
 
     /**
@@ -201,12 +294,16 @@ public class WebviewWatchdog {
         long now = currentTimeMillis.getAsLong();
         lastHeartbeatAtMs = now;
         lastRafAtMs = now;
+        rafTrustedSinceMs = now;
         lastVisibility = null;
         lastHasFocus = null;
     }
 
     public void markFrontendReady() {
         resetTimestamps();
+        lastReceivedHeartbeatAtMs = currentTimeMillis.getAsLong();
+        // frontend_ready replays the whole session into the new page.
+        resumePending = false;
         resetRecoveryState();
     }
 
@@ -271,6 +368,7 @@ public class WebviewWatchdog {
         stallCount = 0;
         lastRecoveryAtMs = 0L;
         startupRecoveryAttempts.set(0);
+        this.startupFailureReported.set(false);
     }
 
     static long heartbeatTimeoutMs(boolean frontendReady, boolean streaming) {
@@ -335,7 +433,17 @@ public class WebviewWatchdog {
             stallCount = 0;
             return;
         }
-        if (!tryAcquireRecoveryPermit(frontendReady)) { return; }
+        // Preparing or quarantined browsers cannot be recreated. A skipped request must
+        // leave the startup budget, escalation stage and cooldown untouched.
+        if (!recoveryAllowed.getAsBoolean()) { return; }
+        if (!tryAcquireRecoveryPermit(frontendReady)) {
+            // Give the last replacement its own startup window before reporting failure. The
+            // browser and fallback bridge retries stay alive so late readiness can still win.
+            if (!frontendReady && this.startupFailureReported.compareAndSet(false, true)) {
+                this.startupFailureHandler.run();
+            }
+            return;
+        }
 
         stallCount += 1;
         String reason = "frontendReady=" + frontendReady

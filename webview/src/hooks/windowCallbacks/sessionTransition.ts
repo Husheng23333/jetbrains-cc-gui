@@ -7,7 +7,10 @@
  */
 
 import type { MutableRefObject } from 'react';
+import type { StartupHistoryLoadState } from '../../types/startupHistory';
 import { forceWebviewRepaint } from '../../utils/forceWebviewRepaint';
+import { resetClaudeBackgroundTasks } from '../../utils/claudeBackgroundTasks';
+import { finishSessionTransition, isCurrentSessionTransitionCallback, isSessionTransitionPreparing } from '../../utils/sessionTransitionState';
 
 export interface ResetTransientUiStateOptions {
   clearToasts: () => void;
@@ -38,6 +41,12 @@ export interface ResetTransientUiStateOptions {
    * queued messages from firing into a freshly cleared/replaced session.
    */
   clearQueuedMessages?: () => void;
+
+  /**
+   * Drops the restored-history banner. Java retires the restore on every
+   * session swap, so its state never belongs to the session that follows.
+   */
+  setStartupHistoryLoadState?: (state: StartupHistoryLoadState | null) => void;
 }
 
 /**
@@ -47,6 +56,7 @@ export interface ResetTransientUiStateOptions {
  */
 export const buildResetTransientUiState = (opts: ResetTransientUiStateOptions) => {
   return () => {
+    resetClaudeBackgroundTasks();
     opts.clearToasts();
     opts.setStatus('');
     opts.setLoading(false);
@@ -58,6 +68,7 @@ export const buildResetTransientUiState = (opts: ResetTransientUiStateOptions) =
     if (opts.clearQueuedMessages) {
       opts.clearQueuedMessages();
     }
+    opts.setStartupHistoryLoadState?.(null);
     opts.isStreamingRef.current = false;
     opts.useBackendStreamingRenderRef.current = false;
     opts.streamingMessageIndexRef.current = -1;
@@ -99,14 +110,17 @@ export const buildResetTransientUiState = (opts: ResetTransientUiStateOptions) =
  * (useSessionManagement). Flushes any history snapshot that arrived while the
  * guard was active so updateMessages racing the transition is not lost.
  */
-export const releaseSessionTransition = (): void => {
+export const releaseSessionTransition = (accepted = true, token?: string): boolean => {
+  if (!isCurrentSessionTransitionCallback(token) || accepted && isSessionTransitionPreparing()) return false;
   if (window.__sessionTransitioning) {
     window.__sessionTransitioning = false;
   }
   window.__sessionTransitionToken = null;
+  finishSessionTransition();
   if (typeof window.__flushDeferredTransitionUpdateMessages === 'function') {
     window.__flushDeferredTransitionUpdateMessages();
   }
+  return true;
 };
 
 /** Drop a deferred transition snapshot (new transition / clearMessages). */

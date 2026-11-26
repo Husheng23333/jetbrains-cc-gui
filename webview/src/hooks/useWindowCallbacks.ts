@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
+import type { ToastAction } from '../components/Toast';
 import type { MutableRefObject, RefObject } from 'react';
 import type { ClaudeMessage, ClaudeRawMessage, HistoryData, SubagentHistoryResponse, TaskEventMap } from '../types';
 import type {
@@ -16,6 +17,7 @@ import type { RewindRequest } from '../components/RewindDialog';
 import type { RestoredSessionTitle } from '../contexts/SessionContext';
 import { registerWindowCallbacks } from './windowCallbacks/registerCallbacks';
 import { sendBridgeEvent } from '../utils/bridge';
+import type { StartupHistoryLoadState } from '../types/startupHistory';
 
 // Re-export from messageSync to avoid duplicate definition
 export { OPTIMISTIC_MESSAGE_TIME_WINDOW } from './windowCallbacks/messageSync';
@@ -29,7 +31,7 @@ export interface ContextInfo {
 
 export interface UseWindowCallbacksOptions {
   t: TFunction;
-  addToast: (message: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
+  addToast: (message: string, type?: 'info' | 'success' | 'warning' | 'error', action?: ToastAction) => void;
   clearToasts: () => void;
 
   // State setters
@@ -51,8 +53,12 @@ export interface UseWindowCallbacksOptions {
   setCodexPermissionMode: React.Dispatch<React.SetStateAction<PermissionMode>>;
   setSelectedClaudeModel: React.Dispatch<React.SetStateAction<string>>;
   setSelectedCodexModel: React.Dispatch<React.SetStateAction<string>>;
+  /** Optional: only the onModelConfirmed gemini branch consumes it (W2). */
+  setSelectedGeminiModel?: React.Dispatch<React.SetStateAction<string>>;
+  setGeminiPermissionMode?: React.Dispatch<React.SetStateAction<PermissionMode>>;
   setLongContextEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setReasoningEffort: React.Dispatch<React.SetStateAction<ReasoningEffort>>;
+  setClaudeUltracode?: React.Dispatch<React.SetStateAction<boolean>>;
   setCodexFastMode: React.Dispatch<React.SetStateAction<CodexFastMode>>;
   setProviderConfigVersion: React.Dispatch<React.SetStateAction<number>>;
   setActiveProviderConfig: React.Dispatch<React.SetStateAction<ProviderConfig | null>>;
@@ -61,6 +67,7 @@ export interface UseWindowCallbacksOptions {
   setSendShortcut: React.Dispatch<React.SetStateAction<'enter' | 'cmdEnter'>>;
   setAutoOpenFileEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   setPermissionDialogTimeoutSeconds: React.Dispatch<React.SetStateAction<number>>;
+  setStartupHistoryLoadState: React.Dispatch<React.SetStateAction<StartupHistoryLoadState | null>>;
   setSdkStatus: React.Dispatch<React.SetStateAction<Record<string, { installed?: boolean; status?: string }>>>;
   setSdkStatusLoaded: React.Dispatch<React.SetStateAction<boolean>>;
   setSdkStatusError: React.Dispatch<React.SetStateAction<string | null>>;
@@ -121,6 +128,8 @@ export interface UseWindowCallbacksOptions {
   // B-011: Title migration on session ID change
   customSessionTitleRef: MutableRefObject<string | null>;
   currentSessionIdRef: MutableRefObject<string | null>;
+  /** Latest history snapshot without re-registering callbacks (manual-title checks). */
+  historyDataRef: MutableRefObject<HistoryData | null>;
   updateHistoryTitle: (sessionId: string, newTitle: string) => void;
   applyHistoryTitleLocal: (sessionId: string, newTitle: string) => void;
 
@@ -135,6 +144,11 @@ export interface UseWindowCallbacksOptions {
 
   // AI title generation: update the displayed session title when backend generates one
   setCustomSessionTitle: React.Dispatch<React.SetStateAction<string | null>>;
+
+  /** Shared spinner state for on-demand AI title regeneration (refresh buttons). */
+  setRegeneratingTitleSessionIds: React.Dispatch<React.SetStateAction<Set<string>>>;
+  /** Ends an in-flight regeneration: clears the spinner state and its fallback timer. */
+  settleTitleRegeneration: (sessionId: string) => void;
 
   /** Stores the CLI-derived title carried by a Claude history page payload. */
   setRestoredSessionTitle: React.Dispatch<React.SetStateAction<RestoredSessionTitle | null>>;

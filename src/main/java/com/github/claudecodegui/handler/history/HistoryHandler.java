@@ -24,11 +24,14 @@ public class HistoryHandler extends BaseMessageHandler {
             "export_session",  // Export session
             "toggle_favorite", // Toggle favorite status
             "update_title",    // Update session title
+            "regenerate_session_title", // Regenerate AI title from session content
             "delete_title",    // Delete orphaned custom title (B-011)
             "deep_search_history", // Deep search (clear cache and reload)
             "load_subagent_session", // Load Claude Code sidechain Agent process log
             "load_subagent_statuses", // Load lightweight Codex subagent statuses
-            "convert_to_cli_session" // Convert sidechain session to CLI-recognizable session
+            "convert_to_cli_session", // Convert sidechain session to CLI-recognizable session
+            "load_restored_history",
+            "cancel_restored_history"
     };
 
     // Session load callback interface
@@ -37,9 +40,24 @@ public class HistoryHandler extends BaseMessageHandler {
          * @param model optional model id from the history row; null/blank keeps previous UI model
          */
         void onLoadSession(String sessionId, String projectPath, String provider, String model);
+
+        default void onLoadSession(String sessionId, String projectPath, String provider, String model, String transitionToken) {
+            onLoadSession(sessionId, projectPath, provider, model);
+        }
+    }
+
+    public interface RestoredHistoryCallback {
+        void onLoad();
+
+        void onCancel(String requestId);
+
+        /** A Codex history selection rebinds the current session in place and supersedes its restore. */
+        default void onCodexSessionSelected() {
+        }
     }
 
     private SessionLoadCallback sessionLoadCallback;
+    private RestoredHistoryCallback restoredHistoryCallback;
     private String currentProvider = "claude"; // Default to claude
 
     private final HistoryLoadService historyLoadService;
@@ -64,6 +82,43 @@ public class HistoryHandler extends BaseMessageHandler {
 
     public void setSessionLoadCallback(SessionLoadCallback callback) {
         this.sessionLoadCallback = callback;
+    }
+
+    /**
+     * Prevent a delayed history reader from publishing into a newer session transition.
+     * The Codex page reader survives, since a refused transition keeps the current session.
+     */
+    public void invalidatePendingLoads() {
+        historyMessageInjector.fencePendingCodexLoads();
+    }
+
+    /** Drop the previous session's Codex page reader once a replacement is committed. */
+    public void clearCodexHistory() {
+        historyMessageInjector.invalidateCodexHistory();
+    }
+
+    /**
+     * Close the Codex earlier-page loader after a reload committed the whole thread.
+     *
+     * @param sessionId the thread whose transcript is now complete on the page
+     */
+    public void retireCodexPageCursor(String sessionId) {
+        historyMessageInjector.retireCodexPageCursor(sessionId);
+    }
+
+    public void setRestoredHistoryCallback(RestoredHistoryCallback callback) {
+        this.restoredHistoryCallback = callback;
+        historyMessageInjector.setCodexSessionSelectionListener(
+                callback != null ? callback::onCodexSessionSelected : null);
+    }
+
+    /**
+     * Push a restored session's persisted custom title to the webview.
+     *
+     * @param sessionId the session whose saved title should be applied
+     */
+    public void pushCustomTitleToWebview(String sessionId) {
+        historyMetadataService.pushCustomTitle(sessionId);
     }
 
     @Override
@@ -111,6 +166,10 @@ public class HistoryHandler extends BaseMessageHandler {
                 LOG.info("[HistoryHandler] 处理: update_title");
                 historyMetadataService.handleUpdateTitle(content);
                 return true;
+            case "regenerate_session_title":
+                LOG.info("[HistoryHandler] 处理: regenerate_session_title");
+                historyMetadataService.handleRegenerateTitle(content);
+                return true;
             case "delete_title":
                 LOG.info("[HistoryHandler] 处理: delete_title, sessionId=" + content);
                 historyMetadataService.handleDeleteTitle(content);
@@ -133,6 +192,16 @@ public class HistoryHandler extends BaseMessageHandler {
                 String conversionProjectPath = this.context.getProject() != null
                         ? this.context.getProject().getBasePath() : null;
                 this.sessionConversionService.convertSdkSession(content, conversionProjectPath);
+                return true;
+            case "load_restored_history":
+                if (restoredHistoryCallback != null) {
+                    restoredHistoryCallback.onLoad();
+                }
+                return true;
+            case "cancel_restored_history":
+                if (restoredHistoryCallback != null) {
+                    restoredHistoryCallback.onCancel(content != null ? content.trim() : "");
+                }
                 return true;
             default:
                 return false;

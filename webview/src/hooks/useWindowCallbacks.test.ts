@@ -4,6 +4,9 @@ import { useWindowCallbacks } from './useWindowCallbacks.js';
 import type { UseWindowCallbacksOptions } from './useWindowCallbacks.js';
 import type { ClaudeMessage } from '../types/index.js';
 import { forceWebviewRepaint } from '../utils/forceWebviewRepaint.js';
+import { CODEX_SUBAGENT_STATUS_SETTLED_EVENT, trackCodexStatusRequest, trackCodexSubagentTasks } from '../utils/codexStatusRequestTracker';
+import type { SubagentHistoryResponse } from '../types/subagent';
+import { getClaudeBackgroundTasks, resetClaudeBackgroundTasks } from '../utils/claudeBackgroundTasks';
 
 // Mock the repaint util so we can assert the session-transition path triggers it
 // without touching the real DOM (there is no #app element under jsdom).
@@ -47,8 +50,10 @@ describe('useWindowCallbacks integration', () => {
     setCodexPermissionMode: vi.fn(),
     setSelectedClaudeModel: vi.fn(),
     setSelectedCodexModel: vi.fn(),
+    setSelectedGeminiModel: vi.fn(),
     setLongContextEnabled: vi.fn(),
     setReasoningEffort: vi.fn(),
+    setClaudeUltracode: vi.fn(),
     setCodexFastMode: vi.fn(),
     setProviderConfigVersion: vi.fn(),
     setActiveProviderConfig: vi.fn(),
@@ -57,6 +62,7 @@ describe('useWindowCallbacks integration', () => {
     setSendShortcut: vi.fn(),
     setAutoOpenFileEnabled: vi.fn(),
     setPermissionDialogTimeoutSeconds: vi.fn(),
+    setStartupHistoryLoadState: vi.fn(),
     setSdkStatus: vi.fn(),
     setSdkStatusLoaded: vi.fn(),
     setSdkStatusError: vi.fn(),
@@ -105,13 +111,17 @@ describe('useWindowCallbacks integration', () => {
     // B-011
     customSessionTitleRef: { current: null },
     currentSessionIdRef: { current: null },
+    historyDataRef: { current: null },
     updateHistoryTitle: vi.fn(),
     applyHistoryTitleLocal: vi.fn(),
+    setRegeneratingTitleSessionIds: vi.fn(),
+    settleTitleRegeneration: vi.fn(),
 
     ...overrides,
   });
 
   beforeEach(() => {
+    resetClaudeBackgroundTasks();
     window.__sessionTransitioning = false;
     window.__sessionTransitionToken = null;
     window.__deferredTransitionUpdateMessages = null;
@@ -134,6 +144,7 @@ describe('useWindowCallbacks integration', () => {
     delete window.__lastAcceptedMessageCount;
     delete window.__pendingHistoryRefreshMessageCount;
     delete window.__pendingHistoryLoadComplete;
+    delete window.__pendingStartupHistoryLoadState;
     delete window.__historySurfaceRefreshEpoch;
     vi.mocked(forceWebviewRepaint).mockClear();
     window.__dependencyStatusState = 'pending';
@@ -160,6 +171,7 @@ describe('useWindowCallbacks integration', () => {
         model: 'claude-fable-5-1[1m]',
         permissionMode: 'default',
         reasoningEffort: 'high',
+        claudeUltracode: true,
         codexFastMode: 'normal',
       }));
     });
@@ -169,9 +181,52 @@ describe('useWindowCallbacks integration', () => {
     expect(opts.setSelectedClaudeModel).toHaveBeenCalledWith('claude-fable-5-1');
     expect(opts.setLongContextEnabled).toHaveBeenCalledWith(true);
     expect(opts.setReasoningEffort).toHaveBeenCalledWith('high');
+    expect(opts.setClaudeUltracode).toHaveBeenCalledWith(true);
     expect(opts.setCodexFastMode).toHaveBeenCalledWith('normal');
     expect(window.__CCGUI_RECOVERY_STATE_APPLIED__).toBe(true);
     expect((window.sendToJava as ReturnType<typeof vi.fn>).mock.calls.length).toBe(bridgeCallsBeforeRestore);
+  });
+
+  it('accepts the newest startup history generation and drops stale updates', () => {
+    let current: import('../types/startupHistory').StartupHistoryLoadState | null = null;
+    const setStartupHistoryLoadState = vi.fn((update) => {
+      current = typeof update === 'function' ? update(current) : update;
+    });
+    const opts = createOptions({
+      currentSessionIdRef: { current: 'session-1' },
+      setStartupHistoryLoadState: setStartupHistoryLoadState as never,
+    });
+    renderHook(() => useWindowCallbacks(opts));
+
+    act(() => {
+      window.updateStartupHistoryLoadState?.(JSON.stringify({
+        status: 'loading', sessionId: 'session-1', requestId: 'new',
+        generation: 2, messageCount: 0, retryable: false,
+      }));
+      window.updateStartupHistoryLoadState?.(JSON.stringify({
+        status: 'failed', sessionId: 'session-1', requestId: 'old',
+        generation: 1, messageCount: 0, retryable: true,
+      }));
+    });
+
+    expect(current).toEqual(expect.objectContaining({
+      requestId: 'new',
+      status: 'loading',
+    }));
+  });
+
+  it('ignores startup history state from another session', () => {
+    const opts = createOptions({ currentSessionIdRef: { current: 'session-current' } });
+    renderHook(() => useWindowCallbacks(opts));
+
+    act(() => {
+      window.updateStartupHistoryLoadState?.(JSON.stringify({
+        status: 'loaded', sessionId: 'session-old', requestId: 'old',
+        generation: 4, messageCount: 10, retryable: false,
+      }));
+    });
+
+    expect(opts.setStartupHistoryLoadState).not.toHaveBeenCalled();
   });
 
   it('drains Java recovery state buffered before React callback registration', () => {
@@ -180,6 +235,8 @@ describe('useWindowCallbacks integration', () => {
       model: 'gpt-5.6-sol',
       permissionMode: 'default',
       codexFastMode: 'fast',
+      reasoningEffort: 'ultra',
+      claudeUltracode: false,
     });
     const opts = createOptions();
 
@@ -188,7 +245,80 @@ describe('useWindowCallbacks integration', () => {
     expect(opts.setCurrentProvider).toHaveBeenCalledWith('codex');
     expect(opts.setSelectedCodexModel).toHaveBeenCalledWith('gpt-5.6-sol');
     expect(opts.setCodexFastMode).toHaveBeenCalledWith('fast');
+    expect(opts.setReasoningEffort).toHaveBeenCalledWith('ultra');
+    expect(opts.setClaudeUltracode).toHaveBeenCalledWith(false);
     expect(window.__pendingBackendTabState).toBeUndefined();
+  });
+
+  it('merges disjoint Codex status batches in either order and rejects an older poll of the same child', () => {
+    const { result } = renderHook(() => {
+      const [histories, setSubagentHistories] = useState<Record<string, SubagentHistoryResponse>>({});
+      useWindowCallbacks(createOptions({ currentProviderRef: { current: 'codex' },
+        currentSessionIdRef: { current: 'many-agents' }, setSubagentHistories }));
+      return histories;
+    });
+    trackCodexSubagentTasks('many-agents', [{ id: 'child-a' }, { id: 'child-b' }]);
+    trackCodexStatusRequest('many-agents:1', ['child-a']);
+    trackCodexStatusRequest('many-agents:2', ['child-b']);
+    const respond = (requestId: string, toolUseId: string, status: string) => {
+      act(() => window.onSubagentStatusesLoaded?.(JSON.stringify({ sessionId: 'many-agents', provider: 'codex',
+        requestId, statuses: [{ toolUseId, status }] })));
+    };
+    respond('many-agents:2', 'child-b', 'completed');
+    respond('many-agents:1', 'child-a', 'completed');
+    expect(result.current['child-a']?.status).toBe('completed');
+    expect(result.current['child-b']?.status).toBe('completed');
+    trackCodexStatusRequest('many-agents:3', ['child-a']);
+    respond('many-agents:1', 'child-a', 'running');
+    expect(result.current['child-a']?.status).toBe('completed');
+  });
+
+  it('acknowledges a failed native status batch even without any status snapshots', () => {
+    renderHook(() => useWindowCallbacks(createOptions()));
+    const settled = vi.fn();
+    window.addEventListener(CODEX_SUBAGENT_STATUS_SETTLED_EVENT, settled);
+    try {
+      const payload = { sessionId: 'codex-session', provider: 'codex', requestId: 'request-1', error: 'Status read already running' };
+      act(() => window.onSubagentStatusesLoaded?.(JSON.stringify(payload)));
+      expect(settled).toHaveBeenCalledOnce();
+      expect((settled.mock.calls[0][0] as CustomEvent).detail).toEqual(payload);
+    } finally {
+      window.removeEventListener(CODEX_SUBAGENT_STATUS_SETTLED_EVENT, settled);
+    }
+  });
+
+  it('keeps native workflows after foreground completion and clears them on a real session switch', () => {
+    const sessionRef = { current: 'workflow-session' as string | null };
+    renderHook(() => useWindowCallbacks(createOptions({ currentSessionIdRef: sessionRef })));
+    const notify = (session_id: string) => window.onTaskEvent?.(JSON.stringify({ type: 'system',
+      subtype: 'background_tasks_changed', session_id,
+      tasks: [{ task_id: 'workflow', task_type: 'local_workflow', description: 'Review sources' }] }));
+    act(() => notify('workflow-session'));
+    expect(getClaudeBackgroundTasks().tasks).toHaveLength(1);
+    act(() => { window.onStreamEnd?.(); window.setSessionId?.('workflow-session'); });
+    expect(getClaudeBackgroundTasks().tasks).toHaveLength(1);
+    act(() => window.setSessionId?.('different-session'));
+    expect(getClaudeBackgroundTasks().tasks).toHaveLength(0);
+    act(() => notify('workflow-session'));
+    expect(getClaudeBackgroundTasks().tasks).toHaveLength(0);
+    act(() => notify('different-session'));
+    expect(getClaudeBackgroundTasks().tasks).toHaveLength(1);
+    act(() => window.clearMessages?.());
+    expect(getClaudeBackgroundTasks().tasks).toHaveLength(0);
+  });
+
+  it('accepts a final empty Claude task snapshot while another provider is selected', () => {
+    const providerRef = { current: 'claude' };
+    renderHook(() => useWindowCallbacks(createOptions({ currentProviderRef: providerRef,
+      currentSessionIdRef: { current: 'workflow-session' } })));
+    const event = (tasks: unknown[]) => JSON.stringify({ type: 'system', subtype: 'background_tasks_changed',
+      session_id: 'workflow-session', tasks });
+    act(() => window.onTaskEvent?.(event([{ task_id: 'legacy-tool', task_type: 'legacy_task', description: 'Dev server' }])));
+    expect(getClaudeBackgroundTasks().tasks).toHaveLength(1);
+    providerRef.current = 'codex';
+    act(() => window.onTaskEvent?.(event([])));
+    providerRef.current = 'claude';
+    expect(getClaudeBackgroundTasks().tasks).toHaveLength(0);
   });
 
   it('drains the latest usage update buffered before React callback registration', () => {
@@ -407,7 +537,10 @@ describe('useWindowCallbacks integration', () => {
 
     expect(opts.applyHistoryTitleLocal).toHaveBeenCalledWith('sess-123', longAiTitle);
     expect(opts.updateHistoryTitle).not.toHaveBeenCalled();
-    expect(opts.setCustomSessionTitle).toHaveBeenCalledWith(longAiTitle);
+    // Automatic titles never enter customSessionTitle; that slot is reserved
+    // for manual edits and the persisted custom title.
+    expect(opts.setRestoredSessionTitle).toHaveBeenCalledWith({ sessionId: 'sess-123', title: longAiTitle });
+    expect(opts.setCustomSessionTitle).not.toHaveBeenCalled();
   });
 
   it('updateSessionTitle skips when sessionId does not match currentSessionIdRef (stale event)', () => {
@@ -2644,6 +2777,62 @@ describe('useWindowCallbacks integration', () => {
       expect(buffer.current.every((m) => m.type !== 'assistant')).toBe(true);
 
       delete window.__pendingUpdateJson;
+    });
+  });
+
+  // W2: Java fires window.onModelConfirmed for EVERY provider
+  // (ModelProviderHandler), but only claude/codex had branches — a gemini
+  // confirmation fell through silently and the gemini model slot never
+  // learned the confirmed slug.
+  describe('window.onModelConfirmed — per-provider model slots (W2)', () => {
+    it('routes a gemini slug to the gemini slot raw, never through claude normalization', () => {
+      const opts = createOptions();
+      renderHook(() => useWindowCallbacks(opts));
+
+      act(() => {
+        window.onModelConfirmed?.('claude-sonnet-4-6', 'gemini');
+      });
+
+      expect(opts.setSelectedGeminiModel).toHaveBeenCalledTimes(1);
+      expect(opts.setSelectedGeminiModel).toHaveBeenCalledWith('claude-sonnet-4-6');
+      expect(opts.setSelectedClaudeModel).not.toHaveBeenCalled();
+      expect(opts.setSelectedCodexModel).not.toHaveBeenCalled();
+    });
+
+    it('still normalizes claude confirmations (retired alias + [1m] strip)', () => {
+      const opts = createOptions();
+      renderHook(() => useWindowCallbacks(opts));
+
+      act(() => {
+        window.onModelConfirmed?.('claude-opus-4-8[1m]', 'claude');
+      });
+
+      expect(opts.setSelectedClaudeModel).toHaveBeenCalledWith('claude-opus-5');
+      expect(opts.setSelectedGeminiModel).not.toHaveBeenCalled();
+    });
+
+    it('leaves the codex path unchanged', () => {
+      const opts = createOptions();
+      renderHook(() => useWindowCallbacks(opts));
+
+      act(() => {
+        window.onModelConfirmed?.('gpt-5.6-sol', 'codex');
+      });
+
+      expect(opts.setSelectedCodexModel).toHaveBeenCalledWith('gpt-5.6-sol');
+      expect(opts.setSelectedGeminiModel).not.toHaveBeenCalled();
+    });
+
+    it('degrades gracefully when the optional gemini setter is absent', () => {
+      const opts = createOptions();
+      delete (opts as Partial<UseWindowCallbacksOptions>).setSelectedGeminiModel;
+      renderHook(() => useWindowCallbacks(opts));
+
+      expect(() => {
+        act(() => {
+          window.onModelConfirmed?.('gemini-3.7-flash-high', 'gemini');
+        });
+      }).not.toThrow();
     });
   });
 });
