@@ -275,6 +275,13 @@ public class CodexMessageHandler implements MessageCallback {
                 LOG.warn("Codex onComplete called without prior stream_end; forcing stream cleanup");
                 callbackHandler.notifyMessageUpdate(state.getMessages());
                 callbackHandler.notifyStreamEnd();
+            } else if (streamEndedBeforeComplete && "opencode".equals(state.getProvider())) {
+                // OpenCode writes the completed turn to its own transcript. Push one final
+                // authoritative snapshot after stream_end so a delayed/dropped WebView
+                // snapshot cannot leave the live chat stale until the user reloads history.
+                callbackHandler.notifyMessageUpdate(state.getMessages());
+                LOG.info("[OpenCode] Pushed final transcript snapshot after CLI completion, messages="
+                        + state.getMessages().size());
             }
 
             resetStreamingAccumulator();
